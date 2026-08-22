@@ -1,12 +1,14 @@
 import {
   calculateEDpi,
+  calculateValorantCm360,
   calculateValorantInputScale,
+  calculateValorantRawInputScale,
   chooseTargetKind,
   createRoundStats,
   registerClick,
   registerTracking,
   summarizeRound
-} from './engine.js?v=20260822-3';
+} from './engine.js?v=20260822-5';
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('arena');
@@ -41,8 +43,15 @@ const state = {
   targetEndsAt: 0,
   lastFrame: 0,
   roundEndsAt: 0,
-  scale: 1,
+  // Fallback pointer deltas are CSS pixels; locked deltas are raw counts.
   inputScale: 1,
+  fallbackInputScale: 1,
+  rawInputScale: 1,
+  lockedDpi: 800,
+  lockedSensitivity: 0.175,
+  rawInput: false,
+  rawInputRequested: false,
+  rawInputUnavailable: false,
   pointerClient: null,
   width: 0,
   height: 0,
@@ -51,7 +60,6 @@ const state = {
 
 $('dpi-input').value = saved.dpi || 800;
 $('sensitivity-input').value = saved.sensitivity || 0.175;
-$('scale-input').value = saved.scale || 100;
 
 function readStorage(key) {
   try {
@@ -85,7 +93,6 @@ function saveStorage(result) {
     localStorage.setItem('vector-range', JSON.stringify({
       dpi: +$('dpi-input').value,
       sensitivity: +$('sensitivity-input').value,
-      scale: +$('scale-input').value,
       mode: state.mode,
       best: state.bestScores.mixed,
       bestScores: state.bestScores,
@@ -101,10 +108,21 @@ function updateSensitivity() {
   const sensitivity = Number($('sensitivity-input').value);
   $('edpi-value').textContent = calculateEDpi(dpi, sensitivity);
   $('effective-sensitivity').textContent = `${calculateValorantInputScale(dpi, sensitivity).toFixed(2)}x`;
+  $('cm360-value').textContent = `${calculateValorantCm360(dpi, sensitivity).toFixed(1)} cm`;
+}
+
+function updateInputMode() {
+  $('input-mode').textContent = state.rawInput
+    ? '原始鼠标输入 · Valorant'
+    : state.rawInputUnavailable
+      ? '原始输入不可用'
+      : state.running
+        ? '正在连接原始输入...'
+        : '训练开始后启用';
 }
 
 function setSensitivityControlsDisabled(disabled) {
-  ['dpi-input', 'sensitivity-input', 'scale-input'].forEach((id) => {
+  ['dpi-input', 'sensitivity-input'].forEach((id) => {
     $(id).disabled = disabled;
   });
 }
@@ -119,6 +137,9 @@ function resize() {
   state.height = rect.height;
   state.pointer.x = Math.max(0, Math.min(state.width, state.pointer.x));
   state.pointer.y = Math.max(0, Math.min(state.height, state.pointer.y));
+  if (state.running) {
+    state.rawInputScale = calculateValorantRawInputScale(state.lockedSensitivity, state.width);
+  }
 }
 
 function pointInTarget(x, y, target) {
@@ -150,6 +171,49 @@ function setModeControlsDisabled(disabled) {
   document.querySelectorAll('.mode-button').forEach((button) => {
     button.disabled = disabled;
   });
+}
+
+function abortRoundForInput(message) {
+  state.rawInputRequested = false;
+  state.rawInput = false;
+  state.rawInputUnavailable = true;
+  if (!state.running) {
+    updateInputMode();
+    return;
+  }
+
+  state.running = false;
+  state.target = null;
+  document.exitPointerLock?.();
+  $('ready-overlay').hidden = false;
+  $('overlay-title').textContent = '需要原始鼠标输入';
+  $('overlay-copy').textContent = message;
+  $('start-button').disabled = false;
+  $('start-button').innerHTML = '开始训练 <span>60S</span>';
+  setModeControlsDisabled(false);
+  setSensitivityControlsDisabled(false);
+  $('target-label').textContent = '本局未开始';
+  updateInputMode();
+}
+
+function requestTrainingPointerLock() {
+  if (!canvas.requestPointerLock) {
+    abortRoundForInput('当前浏览器不支持原始鼠标输入，请使用 HTTPS Chrome 或 Edge。');
+    return;
+  }
+
+  state.rawInputRequested = true;
+  state.rawInputUnavailable = false;
+  updateInputMode();
+  try {
+    // unadjustedMovement bypasses Windows pointer speed and acceleration.
+    const request = canvas.requestPointerLock({ unadjustedMovement: true });
+    request?.catch?.(() => {
+      abortRoundForInput('浏览器拒绝了原始鼠标输入，请允许指针锁定后重新开始。');
+    });
+  } catch {
+    abortRoundForInput('当前浏览器无法启用原始鼠标输入，请使用 HTTPS Chrome 或 Edge。');
+  }
 }
 
 function createTarget() {
@@ -259,10 +323,12 @@ function startRound() {
   if (state.running) return;
 
   resize();
-  state.inputScale = calculateValorantInputScale(
-    Number($('dpi-input').value),
-    Number($('sensitivity-input').value)
-  ) * state.scale;
+  state.lockedDpi = Number($('dpi-input').value);
+  state.lockedSensitivity = Number($('sensitivity-input').value);
+  state.inputScale = calculateValorantInputScale(state.lockedDpi, state.lockedSensitivity);
+  state.fallbackInputScale = state.inputScale;
+  state.rawInputScale = calculateValorantRawInputScale(state.lockedSensitivity, state.width);
+  state.rawInputUnavailable = false;
   state.running = true;
   state.stats = createRoundStats();
   state.history = [];
@@ -277,7 +343,7 @@ function startRound() {
   $('start-button').textContent = '训练中...';
   setModeControlsDisabled(true);
   setSensitivityControlsDisabled(true);
-  canvas.requestPointerLock?.();
+  requestTrainingPointerLock();
   createTarget();
   requestAnimationFrame(frame);
 }
@@ -286,6 +352,7 @@ function finishRound() {
   if (!state.running) return;
 
   state.running = false;
+  document.exitPointerLock?.();
   const summary = summarizeRound(state.stats);
   state.bestScores[state.mode] = Math.max(state.bestScores[state.mode], summary.totalScore);
   saveStorage({
@@ -314,16 +381,25 @@ function finishRound() {
 }
 
 function toggleFullscreen() {
-  if (!document.fullscreenElement) arenaWrap.requestFullscreen?.().catch(() => {});
-  else document.exitFullscreen?.();
+  if (!document.fullscreenElement) {
+    arenaWrap.requestFullscreen?.().then(() => {
+      if (state.running) requestTrainingPointerLock();
+    }).catch(() => {});
+  } else {
+    document.exitFullscreen?.();
+  }
 }
 
 function pointerPosition(event) {
   if (document.pointerLockElement === canvas) {
-    state.pointer.x = Math.max(0, Math.min(state.width, state.pointer.x + event.movementX * state.inputScale));
-    state.pointer.y = Math.max(0, Math.min(state.height, state.pointer.y + event.movementY * state.inputScale));
+    if (!state.rawInput) return;
+    const scale = state.rawInput ? state.rawInputScale : state.fallbackInputScale;
+    state.pointer.x = Math.max(0, Math.min(state.width, state.pointer.x + event.movementX * scale));
+    state.pointer.y = Math.max(0, Math.min(state.height, state.pointer.y + event.movementY * scale));
     return;
   }
+
+  if (state.running) return;
 
   const rect = canvas.getBoundingClientRect();
   const nextClient = { x: event.clientX - rect.left, y: event.clientY - rect.top };
@@ -333,19 +409,14 @@ function pointerPosition(event) {
     return;
   }
 
-  const deltaX = (nextClient.x - state.pointerClient.x) * state.inputScale;
-  const deltaY = (nextClient.y - state.pointerClient.y) * state.inputScale;
+  const deltaX = (nextClient.x - state.pointerClient.x) * state.fallbackInputScale;
+  const deltaY = (nextClient.y - state.pointerClient.y) * state.fallbackInputScale;
   state.pointerClient = nextClient;
   state.pointer.x = Math.max(0, Math.min(state.width, state.pointer.x + deltaX));
   state.pointer.y = Math.max(0, Math.min(state.height, state.pointer.y + deltaY));
 }
 
 ['dpi-input', 'sensitivity-input'].forEach((id) => $(id).addEventListener('input', updateSensitivity));
-$('scale-input').addEventListener('input', (event) => {
-  state.scale = Number(event.target.value) / 100;
-  $('scale-value').textContent = `${event.target.value}%`;
-  updateSensitivity();
-});
 document.querySelectorAll('.mode-button').forEach((button) => {
   button.addEventListener('click', () => selectMode(button.dataset.mode));
 });
@@ -353,6 +424,7 @@ canvas.addEventListener('pointermove', pointerPosition);
 canvas.addEventListener('pointerdown', (event) => {
   if (!state.running || state.target?.kind !== 'click') return;
 
+  if (!state.rawInput || document.pointerLockElement !== canvas) return;
   pointerPosition(event);
   const hit = pointInTarget(state.pointer.x, state.pointer.y, state.target);
   state.stats = registerClick(state.stats, hit, performance.now() - state.targetStartedAt);
@@ -363,6 +435,17 @@ $('restart-button').addEventListener('click', startRound);
 $('fullscreen-button').addEventListener('click', toggleFullscreen);
 window.addEventListener('resize', resize);
 document.addEventListener('fullscreenchange', resize);
+document.addEventListener('pointerlockchange', () => {
+  state.rawInput = state.rawInputRequested && document.pointerLockElement === canvas;
+  if (state.running && state.rawInputRequested && !state.rawInput) {
+    abortRoundForInput('指针锁定已解除，本局已停止。请重新开始并允许原始输入。');
+    return;
+  }
+  updateInputMode();
+});
+document.addEventListener('pointerlockerror', () => {
+  abortRoundForInput('原始鼠标输入不可用，请允许指针锁定后重新开始。');
+});
 window.addEventListener('keydown', (event) => {
   if (event.key.toLowerCase() === 'f') {
     event.preventDefault();
@@ -370,8 +453,8 @@ window.addEventListener('keydown', (event) => {
   }
 });
 
-state.scale = Number($('scale-input').value) / 100;
 setSensitivityControlsDisabled(false);
+updateInputMode();
 updateSensitivity();
 resize();
 renderModeSelection();
