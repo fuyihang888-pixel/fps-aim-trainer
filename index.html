@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0c1118">
+    <title>Vector Range | Aim Trainer</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand"><span class="brand-mark" aria-hidden="true">+</span><span>VECTOR RANGE</span></div>
+        <div class="mode-badge"><span class="pulse" aria-hidden="true"></span>MIXED PRECISION</div>
+        <button id="fullscreen-button" class="icon-button" type="button" aria-label="切换全屏" title="切换全屏">⛶</button>
+      </header>
+
+      <section class="training-layout" aria-label="混合定位训练">
+        <aside class="control-panel">
+          <p class="eyebrow">Loadout</p>
+          <h1>混合定位</h1>
+          <p class="panel-copy">静态点按与移动跟枪交替出现。每局 60 秒。</p>
+
+          <div class="settings-group">
+            <label for="dpi-input">鼠标 DPI</label>
+            <input id="dpi-input" type="number" inputmode="decimal" min="50" max="30000" step="50" value="800">
+            <label for="sensitivity-input">游戏内灵敏度</label>
+            <input id="sensitivity-input" type="number" inputmode="decimal" min="0.01" max="10" step="0.001" value="0.175">
+            <div class="edpi-readout"><span>eDPI</span><strong id="edpi-value">140</strong></div>
+          </div>
+
+          <div class="settings-group compact-setting">
+            <div class="range-title"><label for="scale-input">训练场视角</label><output id="scale-value" for="scale-input">100%</output></div>
+            <input id="scale-input" type="range" min="60" max="150" value="100">
+          </div>
+
+          <div class="legend" aria-label="靶子说明">
+            <div><span class="legend-dot click-dot"></span><span><b>CLICK</b> 点击命中</span></div>
+            <div><span class="legend-dot track-dot"></span><span><b>TRACK</b> 覆盖跟随</span></div>
+          </div>
+
+          <div class="mode-selector" role="group" aria-label="训练模式">
+            <button class="mode-button" type="button" data-mode="static" aria-pressed="false">静态点按</button>
+            <button class="mode-button" type="button" data-mode="tracking" aria-pressed="false">移动靶跟枪</button>
+            <button class="mode-button" type="button" data-mode="mixed" aria-pressed="true">混合训练</button>
+          </div>
+
+          <button id="start-button" class="start-button" type="button">开始训练 <span>60S</span></button>
+          <p class="hint">按 <kbd>F</kbd> 可切换全屏</p>
+        </aside>
+
+        <section class="arena-section">
+          <div class="hud" aria-live="polite">
+            <div><span>时间</span><strong id="time-value">01:00</strong></div>
+            <div><span>得分</span><strong id="score-value">0000</strong></div>
+            <div><span>连击</span><strong id="combo-value">0x</strong></div>
+          </div>
+          <div id="arena-wrap" class="arena-wrap">
+            <canvas id="arena" aria-label="定位训练场。点击红色 Click 靶，持续覆盖蓝色 Track 靶。"></canvas>
+            <div id="ready-overlay" class="ready-overlay"><span class="crosshair" aria-hidden="true"></span><p id="overlay-title">准备就绪</p><small id="overlay-copy">点击“开始训练”进入混合局</small></div>
+            <div id="result-overlay" class="result-overlay" hidden>
+              <p class="eyebrow">Run complete</p>
+              <h2>训练结算</h2>
+              <p id="result-mode" class="result-mode">混合训练</p>
+              <strong id="result-score">0</strong>
+              <span>总得分</span>
+              <div class="result-score-breakdown">
+                <div><small>点按得分</small><b id="result-click-score">0</b></div>
+                <div><small>跟枪得分</small><b id="result-tracking-score">0</b></div>
+              </div>
+              <div class="result-grid">
+                <div><small>点按命中率</small><b id="result-accuracy">0%</b></div>
+                <div><small>平均反应</small><b id="result-reaction">0 ms</b></div>
+                <div><small>跟枪覆盖</small><b id="result-coverage">0%</b></div>
+                <div><small>跟枪时长</small><b id="result-track-time">0.0 s</b></div>
+                <div><small>最高连击</small><b id="result-combo">0x</b></div>
+              </div>
+              <button id="restart-button" type="button">再来一局</button>
+            </div>
+          </div>
+          <div class="status-line"><span id="target-label">等待开始</span><span id="best-score">最佳 0</span></div>
+        </section>
+      </section>
+    </main>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
