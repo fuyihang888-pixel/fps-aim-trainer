@@ -1,5 +1,6 @@
 import {
   calculateEDpi,
+  calculateValorantInputScale,
   chooseTargetKind,
   createRoundStats,
   registerClick,
@@ -41,6 +42,8 @@ const state = {
   lastFrame: 0,
   roundEndsAt: 0,
   scale: 1,
+  inputScale: 1,
+  pointerClient: null,
   width: 0,
   height: 0,
   bestScores: createBestScores(saved)
@@ -97,6 +100,13 @@ function updateSensitivity() {
   const dpi = Number($('dpi-input').value);
   const sensitivity = Number($('sensitivity-input').value);
   $('edpi-value').textContent = calculateEDpi(dpi, sensitivity);
+  $('effective-sensitivity').textContent = `${calculateValorantInputScale(dpi, sensitivity).toFixed(2)}x`;
+}
+
+function setSensitivityControlsDisabled(disabled) {
+  ['dpi-input', 'sensitivity-input', 'scale-input'].forEach((id) => {
+    $(id).disabled = disabled;
+  });
 }
 
 function resize() {
@@ -249,11 +259,16 @@ function startRound() {
   if (state.running) return;
 
   resize();
+  state.inputScale = calculateValorantInputScale(
+    Number($('dpi-input').value),
+    Number($('sensitivity-input').value)
+  ) * state.scale;
   state.running = true;
   state.stats = createRoundStats();
   state.history = [];
   state.target = null;
   state.pointer = { x: state.width / 2, y: state.height / 2 };
+  state.pointerClient = null;
   state.roundEndsAt = performance.now() + ROUND_DURATION_MS;
   state.lastFrame = performance.now();
   $('ready-overlay').hidden = true;
@@ -261,6 +276,7 @@ function startRound() {
   $('start-button').disabled = true;
   $('start-button').textContent = '训练中...';
   setModeControlsDisabled(true);
+  setSensitivityControlsDisabled(true);
   canvas.requestPointerLock?.();
   createTarget();
   requestAnimationFrame(frame);
@@ -294,6 +310,7 @@ function finishRound() {
   $('start-button').disabled = false;
   $('start-button').innerHTML = '开始训练 <span>60S</span>';
   setModeControlsDisabled(false);
+  setSensitivityControlsDisabled(false);
 }
 
 function toggleFullscreen() {
@@ -303,19 +320,31 @@ function toggleFullscreen() {
 
 function pointerPosition(event) {
   if (document.pointerLockElement === canvas) {
-    state.pointer.x = Math.max(0, Math.min(state.width, state.pointer.x + event.movementX * state.scale));
-    state.pointer.y = Math.max(0, Math.min(state.height, state.pointer.y + event.movementY * state.scale));
+    state.pointer.x = Math.max(0, Math.min(state.width, state.pointer.x + event.movementX * state.inputScale));
+    state.pointer.y = Math.max(0, Math.min(state.height, state.pointer.y + event.movementY * state.inputScale));
     return;
   }
 
   const rect = canvas.getBoundingClientRect();
-  state.pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  const nextClient = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  if (!state.running || !state.pointerClient) {
+    state.pointerClient = nextClient;
+    if (!state.running) state.pointer = nextClient;
+    return;
+  }
+
+  const deltaX = (nextClient.x - state.pointerClient.x) * state.inputScale;
+  const deltaY = (nextClient.y - state.pointerClient.y) * state.inputScale;
+  state.pointerClient = nextClient;
+  state.pointer.x = Math.max(0, Math.min(state.width, state.pointer.x + deltaX));
+  state.pointer.y = Math.max(0, Math.min(state.height, state.pointer.y + deltaY));
 }
 
 ['dpi-input', 'sensitivity-input'].forEach((id) => $(id).addEventListener('input', updateSensitivity));
 $('scale-input').addEventListener('input', (event) => {
   state.scale = Number(event.target.value) / 100;
   $('scale-value').textContent = `${event.target.value}%`;
+  updateSensitivity();
 });
 document.querySelectorAll('.mode-button').forEach((button) => {
   button.addEventListener('click', () => selectMode(button.dataset.mode));
@@ -342,6 +371,7 @@ window.addEventListener('keydown', (event) => {
 });
 
 state.scale = Number($('scale-input').value) / 100;
+setSensitivityControlsDisabled(false);
 updateSensitivity();
 resize();
 renderModeSelection();
