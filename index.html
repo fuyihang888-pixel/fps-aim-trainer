@@ -28,12 +28,10 @@
             <input id="sensitivity-input" type="number" inputmode="decimal" min="0.01" max="10" step="0.001" value="0.175">
             <div class="edpi-readout"><span>eDPI</span><strong id="edpi-value">140</strong></div>
             <div class="edpi-readout"><span>Valorant 生效倍率</span><strong id="effective-sensitivity">1.00x</strong></div>
+            <div class="edpi-readout"><span>Valorant cm/360</span><strong id="cm360-value">93.3 cm</strong></div>
+            <div class="edpi-readout"><span>输入模式</span><strong id="input-mode">训练开始后启用</strong></div>
           </div>
-
-          <div class="settings-group compact-setting">
-            <div class="range-title"><label for="scale-input">训练场视角</label><output id="scale-value" for="scale-input">100%</output></div>
-            <input id="scale-input" type="range" min="60" max="150" value="100">
-          </div>
+          <p class="input-note">训练使用原始鼠标计数，不使用 Windows 鼠标速度或加速度。请先把实体鼠标 DPI 设为上方数值。</p>
 
           <div class="legend" aria-label="靶子说明">
             <div><span class="legend-dot click-dot"></span><span><b>CLICK</b> 点击命中</span></div>
@@ -83,6 +81,6 @@
         </section>
       </section>
     </main>
-    <script type="module" src="app.js?v=20260822-3"></script>
+    <script type="module" src="app.js?v=20260822-5"></script>
   </body>
 </html>
