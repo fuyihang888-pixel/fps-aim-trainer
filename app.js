@@ -184,10 +184,11 @@ function abortRoundForInput(message) {
 
   state.running = false;
   state.target = null;
+  context.clearRect(0, 0, state.width, state.height);
   document.exitPointerLock?.();
-  $('ready-overlay').hidden = false;
-  $('overlay-title').textContent = '需要原始鼠标输入';
-  $('overlay-copy').textContent = message;
+  $('ready-overlay').hidden = true;
+  $('input-error').textContent = message;
+  $('input-error').hidden = false;
   $('start-button').disabled = false;
   $('start-button').innerHTML = '开始训练 <span>60S</span>';
   setModeControlsDisabled(false);
@@ -339,6 +340,7 @@ function startRound() {
   state.lastFrame = performance.now();
   $('ready-overlay').hidden = true;
   $('result-overlay').hidden = true;
+  $('input-error').hidden = true;
   $('start-button').disabled = true;
   $('start-button').textContent = '训练中...';
   setModeControlsDisabled(true);
