@@ -14,6 +14,7 @@ const $ = (id) => document.getElementById(id);
 const canvas = $('arena');
 const context = canvas.getContext('2d');
 const arenaWrap = $('arena-wrap');
+const aimCrosshair = $('aim-crosshair');
 const ROUND_DURATION_MS = 60_000;
 
 const MODES = {
@@ -140,6 +141,19 @@ function resize() {
   if (state.running) {
     state.rawInputScale = calculateValorantRawInputScale(state.lockedSensitivity, state.width);
   }
+  updateAimCrosshair();
+}
+
+function updateAimCrosshair() {
+  if (!aimCrosshair) return;
+  aimCrosshair.style.left = `${state.pointer.x}px`;
+  aimCrosshair.style.top = `${state.pointer.y}px`;
+}
+
+function setAimCrosshairVisible(visible) {
+  if (!aimCrosshair) return;
+  aimCrosshair.hidden = !visible;
+  if (visible) updateAimCrosshair();
 }
 
 function pointInTarget(x, y, target) {
@@ -185,6 +199,7 @@ function abortRoundForInput(message) {
   state.running = false;
   state.target = null;
   context.clearRect(0, 0, state.width, state.height);
+  setAimCrosshairVisible(true);
   document.exitPointerLock?.();
   $('ready-overlay').hidden = true;
   $('input-error').textContent = message;
@@ -336,6 +351,7 @@ function startRound() {
   state.target = null;
   state.pointer = { x: state.width / 2, y: state.height / 2 };
   state.pointerClient = null;
+  setAimCrosshairVisible(true);
   state.roundEndsAt = performance.now() + ROUND_DURATION_MS;
   state.lastFrame = performance.now();
   $('ready-overlay').hidden = true;
@@ -355,6 +371,7 @@ function finishRound() {
 
   state.running = false;
   document.exitPointerLock?.();
+  setAimCrosshairVisible(false);
   const summary = summarizeRound(state.stats);
   state.bestScores[state.mode] = Math.max(state.bestScores[state.mode], summary.totalScore);
   saveStorage({
@@ -398,6 +415,7 @@ function pointerPosition(event) {
     const scale = state.rawInput ? state.rawInputScale : state.fallbackInputScale;
     state.pointer.x = Math.max(0, Math.min(state.width, state.pointer.x + event.movementX * scale));
     state.pointer.y = Math.max(0, Math.min(state.height, state.pointer.y + event.movementY * scale));
+    updateAimCrosshair();
     return;
   }
 
@@ -408,6 +426,7 @@ function pointerPosition(event) {
   if (!state.running || !state.pointerClient) {
     state.pointerClient = nextClient;
     if (!state.running) state.pointer = nextClient;
+    updateAimCrosshair();
     return;
   }
 
@@ -416,6 +435,7 @@ function pointerPosition(event) {
   state.pointerClient = nextClient;
   state.pointer.x = Math.max(0, Math.min(state.width, state.pointer.x + deltaX));
   state.pointer.y = Math.max(0, Math.min(state.height, state.pointer.y + deltaY));
+  updateAimCrosshair();
 }
 
 ['dpi-input', 'sensitivity-input'].forEach((id) => $(id).addEventListener('input', updateSensitivity));

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#0c1118">
     <title>Vector Range | Aim Trainer</title>
-    <link rel="stylesheet" href="styles.css?v=20260823-1">
+    <link rel="stylesheet" href="styles.css?v=20260823-2">
   </head>
   <body>
     <main class="app-shell">
@@ -56,7 +56,13 @@
           </div>
           <div id="arena-wrap" class="arena-wrap">
             <canvas id="arena" aria-label="定位训练场。点击红色 Click 靶，持续覆盖蓝色 Track 靶。"></canvas>
-            <div id="ready-overlay" class="ready-overlay"><span class="crosshair" aria-hidden="true"></span><p id="overlay-title">准备就绪</p><small id="overlay-copy">点击“开始训练”进入混合局</small></div>
+            <div id="aim-crosshair" class="aim-crosshair" hidden aria-hidden="true">
+              <span class="crosshair-arm crosshair-arm-top"></span>
+              <span class="crosshair-arm crosshair-arm-right"></span>
+              <span class="crosshair-arm crosshair-arm-bottom"></span>
+              <span class="crosshair-arm crosshair-arm-left"></span>
+            </div>
+            <div id="ready-overlay" class="ready-overlay"><p id="overlay-title">准备就绪</p><small id="overlay-copy">点击“开始训练”进入混合局</small></div>
             <div id="result-overlay" class="result-overlay" hidden>
               <p class="eyebrow">Run complete</p>
               <h2>训练结算</h2>
@@ -82,6 +88,6 @@
         </section>
       </section>
     </main>
-    <script type="module" src="app.js?v=20260823-1"></script>
+    <script type="module" src="app.js?v=20260823-2"></script>
   </body>
 </html>
