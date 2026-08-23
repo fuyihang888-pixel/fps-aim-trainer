@@ -157,6 +157,10 @@ function setAimCrosshairVisible(visible) {
   if (visible) updateAimCrosshair();
 }
 
+function setTrainingCursorHidden(hidden) {
+  arenaWrap.classList.toggle('training-active', hidden);
+}
+
 function pointInTarget(x, y, target) {
   return target && Math.hypot(x - target.x, y - target.y) <= target.radius;
 }
@@ -369,6 +373,7 @@ function startRound() {
   state.target = null;
   state.pointer = { x: state.width / 2, y: state.height / 2 };
   state.pointerClient = null;
+  setTrainingCursorHidden(true);
   setAimCrosshairVisible(true);
   state.roundEndsAt = performance.now() + ROUND_DURATION_MS;
   state.lastFrame = performance.now();
@@ -388,6 +393,7 @@ function finishRound() {
   if (!state.running) return;
 
   state.running = false;
+  setTrainingCursorHidden(false);
   state.rawInputRequested = false;
   state.rawInput = false;
   clearRawInputFallbackTimer();

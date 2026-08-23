@@ -2,6 +2,7 @@
 * { box-sizing:border-box; }
 body { margin:0; min-width:320px; min-height:100vh; color:var(--ink); background:var(--deep); font-family:Arial, "Microsoft YaHei", sans-serif; }
 button, input { font:inherit; } button { cursor:pointer; }
+.arena-wrap.training-active, .arena-wrap.training-active * { cursor:none !important; }
 .app-shell { min-height:100vh; padding:24px; background:radial-gradient(circle at 73% 40%, #14242e 0, #0c1118 39%, #080c11 100%); }
 .topbar { max-width:1440px; margin:0 auto 22px; display:flex; align-items:center; justify-content:space-between; gap:16px; }
 .brand { display:flex; gap:10px; align-items:center; letter-spacing:2px; font-size:13px; font-weight:700; }
