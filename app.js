@@ -1,14 +1,17 @@
 import {
+  DEFAULT_DPI,
+  DEFAULT_SENSITIVITY,
   calculateEDpi,
   calculateValorantCm360,
   calculateValorantInputScale,
   calculateValorantRawInputScale,
+  resolveValorantSettings,
   chooseTargetKind,
   createRoundStats,
   registerClick,
   registerTracking,
   summarizeRound
-} from './engine.js?v=20260822-5';
+} from './engine.js?v=20260823-12';
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('arena');
@@ -48,8 +51,8 @@ const state = {
   inputScale: 1,
   fallbackInputScale: 1,
   rawInputScale: 1,
-  lockedDpi: 800,
-  lockedSensitivity: 0.175,
+  lockedDpi: DEFAULT_DPI,
+  lockedSensitivity: DEFAULT_SENSITIVITY,
   rawInput: false,
   rawInputRequested: false,
   rawInputUnavailable: false,
@@ -60,8 +63,11 @@ const state = {
   bestScores: createBestScores(saved)
 };
 
-$('dpi-input').value = saved.dpi || 800;
-$('sensitivity-input').value = saved.sensitivity || 0.175;
+// Sensitivity is deliberately reset on each page load. A visitor can tune it
+// for the current session, while every fresh visit starts from the shared
+// Valorant reference preset.
+$('dpi-input').value = DEFAULT_DPI;
+$('sensitivity-input').value = DEFAULT_SENSITIVITY;
 
 function readStorage(key) {
   try {
@@ -93,8 +99,6 @@ function saveStorage(result) {
     const previous = readStorage('vector-range') || {};
     const recent = Array.isArray(previous.recent) ? previous.recent : [];
     localStorage.setItem('vector-range', JSON.stringify({
-      dpi: +$('dpi-input').value,
-      sensitivity: +$('sensitivity-input').value,
       mode: state.mode,
       best: state.bestScores.mixed,
       bestScores: state.bestScores,
@@ -105,12 +109,29 @@ function saveStorage(result) {
   }
 }
 
+function formatDecimal(value, digits) {
+  return Number(value.toFixed(digits)).toString();
+}
+
 function updateSensitivity() {
-  const dpi = Number($('dpi-input').value);
-  const sensitivity = Number($('sensitivity-input').value);
-  $('edpi-value').textContent = calculateEDpi(dpi, sensitivity);
-  $('effective-sensitivity').textContent = `${calculateValorantInputScale(dpi, sensitivity).toFixed(2)}x`;
-  $('cm360-value').textContent = `${calculateValorantCm360(dpi, sensitivity).toFixed(1)} cm`;
+  const settings = resolveValorantSettings(
+    Number($('dpi-input').value),
+    Number($('sensitivity-input').value)
+  );
+  $('edpi-value').textContent = formatDecimal(calculateEDpi(settings.dpi, settings.sensitivity), 3);
+  $('effective-sensitivity').textContent = `${calculateValorantInputScale(settings.dpi, settings.sensitivity).toFixed(6)}x`;
+  $('cm360-value').textContent = `${calculateValorantCm360(settings.dpi, settings.sensitivity).toFixed(2)} cm`;
+}
+
+function normalizeSensitivityInputs() {
+  const settings = resolveValorantSettings(
+    Number($('dpi-input').value),
+    Number($('sensitivity-input').value)
+  );
+  $('dpi-input').value = settings.dpi;
+  $('sensitivity-input').value = settings.sensitivity;
+  updateSensitivity();
+  return settings;
 }
 
 function updateInputMode() {
@@ -233,13 +254,11 @@ function requestTrainingPointerLock() {
   };
   try {
     // unadjustedMovement bypasses Windows pointer speed and acceleration.
-    let request;
-    try {
-      request = canvas.requestPointerLock({ unadjustedMovement: true });
-    } catch {
-      // Older browsers may only expose the legacy no-options form.
-      request = canvas.requestPointerLock();
-    }
+    // Do not fall back to the legacy pointer-lock form here: its movementX/Y
+    // values can already be OS-accelerated coordinates, not Valorant-style
+    // raw counts. The normal pointer-event path below is the explicit
+    // compatibility mode for browsers that reject unadjusted movement.
+    const request = canvas.requestPointerLock({ unadjustedMovement: true });
     request?.catch?.(() => {
       fallback();
     });
@@ -358,8 +377,9 @@ function startRound() {
   if (state.running) return;
 
   resize();
-  state.lockedDpi = Number($('dpi-input').value);
-  state.lockedSensitivity = Number($('sensitivity-input').value);
+  const settings = normalizeSensitivityInputs();
+  state.lockedDpi = settings.dpi;
+  state.lockedSensitivity = settings.sensitivity;
   state.inputScale = calculateValorantInputScale(state.lockedDpi, state.lockedSensitivity);
   state.fallbackInputScale = state.inputScale;
   state.rawInputScale = calculateValorantRawInputScale(state.lockedSensitivity, state.width);
@@ -462,7 +482,10 @@ function pointerPosition(event) {
   updateAimCrosshair();
 }
 
-['dpi-input', 'sensitivity-input'].forEach((id) => $(id).addEventListener('input', updateSensitivity));
+['dpi-input', 'sensitivity-input'].forEach((id) => {
+  $(id).addEventListener('input', updateSensitivity);
+  $(id).addEventListener('blur', normalizeSensitivityInputs);
+});
 document.querySelectorAll('.mode-button').forEach((button) => {
   button.addEventListener('click', () => selectMode(button.dataset.mode));
 });
@@ -481,7 +504,18 @@ $('fullscreen-button').addEventListener('click', toggleFullscreen);
 window.addEventListener('resize', resize);
 document.addEventListener('fullscreenchange', resize);
 document.addEventListener('pointerlockchange', () => {
-  state.rawInput = state.rawInputRequested && document.pointerLockElement === canvas;
+  const lockedToCanvas = document.pointerLockElement === canvas;
+  // A lock promise/event can arrive after the fallback path has already
+  // invalidated the request. Do not leave the document locked in that state:
+  // pointerPosition would otherwise ignore all compatible pointer events.
+  if (lockedToCanvas && !state.rawInputRequested) {
+    state.rawInput = false;
+    document.exitPointerLock?.();
+    updateInputMode();
+    return;
+  }
+
+  state.rawInput = state.rawInputRequested && lockedToCanvas;
   if (state.rawInput) {
     clearRawInputFallbackTimer();
     state.rawInputUnavailable = false;

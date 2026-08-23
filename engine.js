@@ -1,45 +1,56 @@
-export const DEFAULT_DPI = 800;
-export const DEFAULT_SENSITIVITY = 0.175;
+export const DEFAULT_DPI = 1000;
+export const DEFAULT_SENSITIVITY = 1;
 export const VALORANT_YAW_DEGREES_PER_COUNT = 0.07;
 export const VALORANT_HORIZONTAL_FOV_DEGREES = 103;
 
-const resolveSensitivity = (dpi, sensitivity) => ({
+export const resolveValorantSettings = (dpi, sensitivity) => ({
   dpi: Number.isFinite(dpi) && dpi > 0 ? dpi : DEFAULT_DPI,
   sensitivity: Number.isFinite(sensitivity) && sensitivity > 0 ? sensitivity : DEFAULT_SENSITIVITY
 });
 
 export const calculateEDpi = (dpi, sensitivity) => {
-  const resolved = resolveSensitivity(dpi, sensitivity);
-  return Math.round(resolved.dpi * resolved.sensitivity * 100) / 100;
+  const resolved = resolveValorantSettings(dpi, sensitivity);
+  return resolved.dpi * resolved.sensitivity;
+};
+
+// Valorant applies 0.07 degrees of yaw for each unadjusted mouse count.
+// DPI changes how many counts a physical mouse movement produces, but it must
+// not be multiplied into a Pointer Lock delta a second time.
+export const calculateValorantCountsPer360 = (sensitivity) => {
+  const resolved = resolveValorantSettings(DEFAULT_DPI, sensitivity);
+  return 360 / (resolved.sensitivity * VALORANT_YAW_DEGREES_PER_COUNT);
 };
 
 export const calculateValorantCm360 = (dpi, sensitivity) => {
-  const resolved = resolveSensitivity(dpi, sensitivity);
-  return (360 * 2.54) / (resolved.dpi * resolved.sensitivity * VALORANT_YAW_DEGREES_PER_COUNT);
+  const resolved = resolveValorantSettings(dpi, sensitivity);
+  return (calculateValorantCountsPer360(resolved.sensitivity) / resolved.dpi) * 2.54;
 };
 
-// The browser canvas is calibrated to the default 800 DPI x 0.175 preset.
+// The browser canvas is calibrated to the default 1000 DPI x 1.0 preset.
 // The ratio is the same DPI * in-game sensitivity ratio used by Valorant.
 export const calculateValorantInputScale = (dpi, sensitivity) => {
-  const resolved = resolveSensitivity(dpi, sensitivity);
+  const resolved = resolveValorantSettings(dpi, sensitivity);
   const referenceEDpi = DEFAULT_DPI * DEFAULT_SENSITIVITY;
   return (resolved.dpi * resolved.sensitivity) / referenceEDpi;
 };
 
-// Pointer Lock movementX/movementY are hardware counts when unadjustedMovement
-// is enabled. Project each raw count through Valorant's 0.07 degree/count yaw
-// and the arena's horizontal field of view into CSS pixels.
+// Pointer Lock movementX/movementY are hardware counts when
+// `unadjustedMovement` is enabled. Project each count through the same
+// counts-per-360 relationship as Valorant and the arena's horizontal FOV.
+// The DPI is intentionally absent: the browser's raw count already reflects
+// the selected mouse DPI, so adding it here would apply DPI twice.
 export const calculateValorantRawInputScale = (
   sensitivity,
   viewportWidth,
   fovDegrees = VALORANT_HORIZONTAL_FOV_DEGREES
 ) => {
-  const resolved = resolveSensitivity(DEFAULT_DPI, sensitivity);
+  const resolved = resolveValorantSettings(DEFAULT_DPI, sensitivity);
   const width = Number.isFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 1;
   const fov = Number.isFinite(fovDegrees) && fovDegrees > 0
     ? fovDegrees
     : VALORANT_HORIZONTAL_FOV_DEGREES;
-  return (resolved.sensitivity * VALORANT_YAW_DEGREES_PER_COUNT * width) / fov;
+  const countsPer360 = calculateValorantCountsPer360(resolved.sensitivity);
+  return (width * 360) / (countsPer360 * fov);
 };
 
 export const createRoundStats = () => ({
