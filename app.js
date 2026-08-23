@@ -53,6 +53,7 @@ const state = {
   rawInput: false,
   rawInputRequested: false,
   rawInputUnavailable: false,
+  rawInputFallbackTimer: 0,
   pointerClient: null,
   width: 0,
   height: 0,
@@ -116,10 +117,10 @@ function updateInputMode() {
   $('input-mode').textContent = state.rawInput
     ? '原始鼠标输入 · Valorant'
     : state.rawInputUnavailable
-      ? '原始输入不可用'
+      ? '兼容鼠标输入 · 灵敏度已应用'
       : state.running
-        ? '正在连接原始输入...'
-        : '训练开始后启用';
+        ? '正在选择输入...'
+        : '点击开始后自动选择';
 }
 
 function setSensitivityControlsDisabled(disabled) {
@@ -187,48 +188,62 @@ function setModeControlsDisabled(disabled) {
   });
 }
 
-function abortRoundForInput(message) {
+function clearRawInputFallbackTimer() {
+  if (!state.rawInputFallbackTimer) return;
+  window.clearTimeout(state.rawInputFallbackTimer);
+  state.rawInputFallbackTimer = 0;
+}
+
+function setInputStatus(message) {
+  const status = $('input-error');
+  status.textContent = message;
+  status.hidden = !message;
+}
+
+function enableFallbackInput(message = '原始输入未启用，已自动切换兼容鼠标输入，可直接训练。') {
   state.rawInputRequested = false;
   state.rawInput = false;
   state.rawInputUnavailable = true;
-  if (!state.running) {
-    updateInputMode();
-    return;
-  }
-
-  state.running = false;
-  state.target = null;
-  context.clearRect(0, 0, state.width, state.height);
-  setAimCrosshairVisible(true);
-  document.exitPointerLock?.();
-  $('ready-overlay').hidden = true;
-  $('input-error').textContent = message;
-  $('input-error').hidden = false;
-  $('start-button').disabled = false;
-  $('start-button').innerHTML = '开始训练 <span>60S</span>';
-  setModeControlsDisabled(false);
-  setSensitivityControlsDisabled(false);
-  $('target-label').textContent = '本局未开始';
+  // A delayed lock request can still complete after the fallback timer. Release
+  // it so subsequent pointer events continue through the normal client path.
+  if (document.pointerLockElement === canvas) document.exitPointerLock?.();
+  state.pointerClient = null;
+  clearRawInputFallbackTimer();
+  if (state.running) setInputStatus(message);
   updateInputMode();
 }
 
 function requestTrainingPointerLock() {
   if (!canvas.requestPointerLock) {
-    abortRoundForInput('当前浏览器不支持原始鼠标输入，请使用 HTTPS Chrome 或 Edge。');
+    enableFallbackInput('当前浏览器未提供原始输入，已自动切换兼容鼠标输入，可直接训练。');
     return;
   }
 
   state.rawInputRequested = true;
   state.rawInputUnavailable = false;
   updateInputMode();
+  const fallback = () => {
+    if (state.running && state.rawInputRequested && !state.rawInput) {
+      enableFallbackInput();
+    }
+  };
   try {
     // unadjustedMovement bypasses Windows pointer speed and acceleration.
-    const request = canvas.requestPointerLock({ unadjustedMovement: true });
+    let request;
+    try {
+      request = canvas.requestPointerLock({ unadjustedMovement: true });
+    } catch {
+      // Older browsers may only expose the legacy no-options form.
+      request = canvas.requestPointerLock();
+    }
     request?.catch?.(() => {
-      abortRoundForInput('浏览器拒绝了原始鼠标输入，请允许指针锁定后重新开始。');
+      fallback();
     });
+    if (state.rawInputRequested) {
+      state.rawInputFallbackTimer = window.setTimeout(fallback, 1200);
+    }
   } catch {
-    abortRoundForInput('当前浏览器无法启用原始鼠标输入，请使用 HTTPS Chrome 或 Edge。');
+    fallback();
   }
 }
 
@@ -345,6 +360,9 @@ function startRound() {
   state.fallbackInputScale = state.inputScale;
   state.rawInputScale = calculateValorantRawInputScale(state.lockedSensitivity, state.width);
   state.rawInputUnavailable = false;
+  state.rawInput = false;
+  state.rawInputRequested = false;
+  clearRawInputFallbackTimer();
   state.running = true;
   state.stats = createRoundStats();
   state.history = [];
@@ -356,7 +374,7 @@ function startRound() {
   state.lastFrame = performance.now();
   $('ready-overlay').hidden = true;
   $('result-overlay').hidden = true;
-  $('input-error').hidden = true;
+  setInputStatus('');
   $('start-button').disabled = true;
   $('start-button').textContent = '训练中...';
   setModeControlsDisabled(true);
@@ -370,6 +388,9 @@ function finishRound() {
   if (!state.running) return;
 
   state.running = false;
+  state.rawInputRequested = false;
+  state.rawInput = false;
+  clearRawInputFallbackTimer();
   document.exitPointerLock?.();
   setAimCrosshairVisible(false);
   const summary = summarizeRound(state.stats);
@@ -412,20 +433,17 @@ function toggleFullscreen() {
 function pointerPosition(event) {
   if (document.pointerLockElement === canvas) {
     if (!state.rawInput) return;
-    const scale = state.rawInput ? state.rawInputScale : state.fallbackInputScale;
-    state.pointer.x = Math.max(0, Math.min(state.width, state.pointer.x + event.movementX * scale));
-    state.pointer.y = Math.max(0, Math.min(state.height, state.pointer.y + event.movementY * scale));
+    state.pointer.x = Math.max(0, Math.min(state.width, state.pointer.x + event.movementX * state.rawInputScale));
+    state.pointer.y = Math.max(0, Math.min(state.height, state.pointer.y + event.movementY * state.rawInputScale));
     updateAimCrosshair();
     return;
   }
-
-  if (state.running) return;
 
   const rect = canvas.getBoundingClientRect();
   const nextClient = { x: event.clientX - rect.left, y: event.clientY - rect.top };
   if (!state.running || !state.pointerClient) {
     state.pointerClient = nextClient;
-    if (!state.running) state.pointer = nextClient;
+    state.pointer = nextClient;
     updateAimCrosshair();
     return;
   }
@@ -446,7 +464,6 @@ canvas.addEventListener('pointermove', pointerPosition);
 canvas.addEventListener('pointerdown', (event) => {
   if (!state.running || state.target?.kind !== 'click') return;
 
-  if (!state.rawInput || document.pointerLockElement !== canvas) return;
   pointerPosition(event);
   const hit = pointInTarget(state.pointer.x, state.pointer.y, state.target);
   state.stats = registerClick(state.stats, hit, performance.now() - state.targetStartedAt);
@@ -459,14 +476,17 @@ window.addEventListener('resize', resize);
 document.addEventListener('fullscreenchange', resize);
 document.addEventListener('pointerlockchange', () => {
   state.rawInput = state.rawInputRequested && document.pointerLockElement === canvas;
-  if (state.running && state.rawInputRequested && !state.rawInput) {
-    abortRoundForInput('指针锁定已解除，本局已停止。请重新开始并允许原始输入。');
-    return;
+  if (state.rawInput) {
+    clearRawInputFallbackTimer();
+    state.rawInputUnavailable = false;
+    setInputStatus('');
+  } else if (state.running && state.rawInputRequested) {
+    enableFallbackInput('指针锁定未启用，已自动切换兼容鼠标输入，可直接训练。');
   }
   updateInputMode();
 });
 document.addEventListener('pointerlockerror', () => {
-  abortRoundForInput('原始鼠标输入不可用，请允许指针锁定后重新开始。');
+  if (state.running && state.rawInputRequested) enableFallbackInput();
 });
 window.addEventListener('keydown', (event) => {
   if (event.key.toLowerCase() === 'f') {
