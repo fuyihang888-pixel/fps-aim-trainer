@@ -948,9 +948,16 @@ function pointerPosition(event) {
 // without applying one physical sample twice when both events are delivered.
 let lastMouseMoveTimeStamp = null;
 function pointerMoveEvent(event) {
-  if (event.type === 'pointermove' && event.timeStamp === lastMouseMoveTimeStamp) return;
-  if (event.type === 'mousemove') lastMouseMoveTimeStamp = event.timeStamp;
+  const hasTimeStamp = Number.isFinite(event.timeStamp);
+  if (event.type === 'pointermove' && hasTimeStamp && event.timeStamp === lastMouseMoveTimeStamp) return;
+  if (event.type === 'mousemove' && hasTimeStamp) lastMouseMoveTimeStamp = event.timeStamp;
   pointerPosition(event);
+}
+
+function documentMouseMove(event) {
+  // Pointer Lock implementations differ on whether the locked element or
+  // document receives the movement event. Canvas-targeted events already ran.
+  if (document.pointerLockElement === canvas && event.target !== canvas) pointerMoveEvent(event);
 }
 
 $('sensitivity-input').addEventListener('input', () => {
@@ -980,6 +987,7 @@ $('continue-training-button').addEventListener('click', continueTraining);
 $('exit-and-end-button').addEventListener('click', exitFullscreenAndCancel);
 $('fullscreen-button').addEventListener('click', toggleFullscreen);
 window.addEventListener('resize', resize);
+document.addEventListener('mousemove', documentMouseMove);
 if (typeof ResizeObserver === 'function') {
   const arenaResizeObserver = new ResizeObserver(resize);
   arenaResizeObserver.observe(arenaWrap);
