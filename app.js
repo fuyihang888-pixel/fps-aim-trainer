@@ -6,15 +6,18 @@ import {
   calculateValorantCm360,
   calculateValorantInputScale,
   calculateValorantRawInputScale,
+  clampTargetToArena,
   getResumeCountdownSeconds,
   resolveValorantSettings,
+  resolveEscapeAction,
+  resolvePointerUnlockAction,
   shiftTrainingTimelineAfterPause,
   chooseTargetKind,
   createRoundStats,
   registerClick,
   registerTracking,
   summarizeRound
-} from './engine.js?v=20260824-13';
+} from './engine.js?v=20260824-14';
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('arena');
@@ -47,6 +50,8 @@ const state = {
   pauseActionPending: false,
   resumeCountdownStartedAt: 0,
   resumeCountdownTimer: 0,
+  animationFrameId: 0,
+  suppressWindowedEscapeUntil: 0,
   fullscreenActive: document.fullscreenElement === arenaWrap,
   mode: normalizeMode(saved.mode),
   stats: createRoundStats(),
@@ -174,6 +179,9 @@ function resize() {
   state.height = rect.height;
   state.pointer.x = Math.max(0, Math.min(state.width, state.pointer.x));
   state.pointer.y = Math.max(0, Math.min(state.height, state.pointer.y));
+  if (state.running && state.target) {
+    state.target = clampTargetToArena(state.target, state.width, state.height);
+  }
   if (state.running) {
     state.rawInputScale = calculateValorantRawInputScale(state.lockedSensitivity, state.width);
   }
@@ -239,6 +247,17 @@ function clearResumeCountdownTimer() {
   state.resumeCountdownTimer = 0;
 }
 
+function cancelScheduledFrame() {
+  if (!state.animationFrameId) return;
+  window.cancelAnimationFrame(state.animationFrameId);
+  state.animationFrameId = 0;
+}
+
+function scheduleFrame() {
+  if (state.animationFrameId || !state.running || state.paused) return;
+  state.animationFrameId = window.requestAnimationFrame(frame);
+}
+
 function setPauseActionsDisabled(disabled) {
   document.querySelectorAll('#pause-menu button').forEach((button) => {
     button.disabled = disabled;
@@ -264,37 +283,79 @@ function enableFallbackInput(message = '原始输入未启用，已自动切换�
   updateInputMode();
 }
 
-function requestTrainingPointerLock({ allowPaused = false } = {}) {
-  if (!state.running || (state.paused && !allowPaused)) return;
+function requestTrainingPointerLock({ allowPaused = false, timeoutMs = 1200 } = {}) {
+  if (!state.running || (state.paused && !allowPaused)) return Promise.resolve(false);
+  if (document.pointerLockElement === canvas) {
+    state.rawInputRequested = true;
+    state.rawInput = true;
+    state.rawInputUnavailable = false;
+    clearRawInputFallbackTimer();
+    setInputStatus('');
+    updateInputMode();
+    return Promise.resolve(true);
+  }
   if (!canvas.requestPointerLock) {
     enableFallbackInput('当前浏览器未提供原始输入，已自动切换兼容鼠标输入，可直接训练。');
-    return;
+    return Promise.resolve(false);
   }
 
   state.rawInputRequested = true;
   state.rawInputUnavailable = false;
+  clearRawInputFallbackTimer();
   updateInputMode();
-  const fallback = () => {
-    if (state.running && state.rawInputRequested && !state.rawInput) {
-      enableFallbackInput();
-    }
-  };
-  try {
-    // unadjustedMovement bypasses Windows pointer speed and acceleration.
-    // Do not fall back to the legacy pointer-lock form here: its movementX/Y
-    // values can already be OS-accelerated coordinates, not Valorant-style
-    // raw counts. The normal pointer-event path below is the explicit
-    // compatibility mode for browsers that reject unadjusted movement.
-    const request = canvas.requestPointerLock({ unadjustedMovement: true });
-    request?.catch?.(() => {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (locked) => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener('pointerlockchange', handleChange);
+      document.removeEventListener('pointerlockerror', handleError);
+      if (locked) {
+        clearRawInputFallbackTimer();
+        state.rawInput = true;
+        state.rawInputUnavailable = false;
+        setInputStatus('');
+        updateInputMode();
+      }
+      resolve(locked);
+    };
+    const fallback = () => {
+      if (state.running && state.rawInputRequested && !state.rawInput) enableFallbackInput();
+      finish(false);
+    };
+    const handleChange = () => {
+      if (document.pointerLockElement === canvas) finish(true);
+      else fallback();
+    };
+    const handleError = () => fallback();
+
+    document.addEventListener('pointerlockchange', handleChange);
+    document.addEventListener('pointerlockerror', handleError);
+    try {
+      // unadjustedMovement bypasses Windows pointer speed and acceleration.
+      // Do not fall back to legacy Pointer Lock: its deltas may be adjusted by
+      // the operating system, unlike Valorant's raw hardware counts.
+      const request = canvas.requestPointerLock({ unadjustedMovement: true });
+      request?.then?.(() => {
+        if (document.pointerLockElement === canvas) finish(true);
+        else fallback();
+      }, fallback);
+      state.rawInputFallbackTimer = window.setTimeout(fallback, timeoutMs);
+    } catch {
       fallback();
-    });
-    if (state.rawInputRequested) {
-      state.rawInputFallbackTimer = window.setTimeout(fallback, 1200);
     }
-  } catch {
-    fallback();
-  }
+  });
+}
+
+function synchronizePointerLockAfterFullscreenExit(requestSucceeded) {
+  const locked = requestSucceeded && document.pointerLockElement === canvas;
+  clearRawInputFallbackTimer();
+  state.rawInputRequested = locked;
+  state.rawInput = locked;
+  state.rawInputUnavailable = !locked;
+  state.pointerClient = null;
+  setInputStatus(locked ? '' : '原始输入未启用，已自动切换兼容鼠标输入，可直接训练。');
+  updateInputMode();
 }
 
 function createTarget() {
@@ -375,6 +436,7 @@ function updateHud() {
 }
 
 function frame(now) {
+  state.animationFrameId = 0;
   if (!state.running || state.paused) return;
 
   const elapsed = now - state.lastFrame;
@@ -400,7 +462,7 @@ function frame(now) {
   if (now >= state.targetEndsAt) createTarget();
   drawTarget(state.target, now);
   updateHud();
-  requestAnimationFrame(frame);
+  scheduleFrame();
 }
 
 function startRound() {
@@ -418,12 +480,14 @@ function startRound() {
   state.rawInputRequested = false;
   clearRawInputFallbackTimer();
   clearResumeCountdownTimer();
+  cancelScheduledFrame();
   state.running = true;
   state.paused = false;
   state.pauseStartedAt = 0;
   state.pauseMode = null;
   state.pauseActionPending = false;
   state.resumeCountdownStartedAt = 0;
+  state.suppressWindowedEscapeUntil = 0;
   state.fullscreenActive = document.fullscreenElement === arenaWrap;
   state.stats = createRoundStats();
   state.history = [];
@@ -444,19 +508,22 @@ function startRound() {
   setSensitivityControlsDisabled(true);
   requestTrainingPointerLock();
   createTarget();
-  requestAnimationFrame(frame);
+  scheduleFrame();
 }
 
 function resetRoundInteraction() {
   clearResumeCountdownTimer();
+  cancelScheduledFrame();
   state.running = false;
   state.paused = false;
   state.pauseStartedAt = 0;
   state.pauseMode = null;
   state.pauseActionPending = false;
   state.resumeCountdownStartedAt = 0;
+  state.suppressWindowedEscapeUntil = 0;
   state.rawInputRequested = false;
   state.rawInput = false;
+  state.rawInputUnavailable = false;
   state.pointerClient = null;
   clearRawInputFallbackTimer();
   setTrainingCursorHidden(false);
@@ -466,6 +533,8 @@ function resetRoundInteraction() {
   $('resume-countdown').hidden = true;
   setPauseActionsDisabled(false);
   document.exitPointerLock?.();
+  setInputStatus('');
+  updateInputMode();
 }
 
 function finishRound() {
@@ -534,6 +603,7 @@ function pauseRound() {
   state.pointerClient = null;
   clearRawInputFallbackTimer();
   clearResumeCountdownTimer();
+  cancelScheduledFrame();
   document.exitPointerLock?.();
   setTrainingCursorHidden(false);
   setAimCrosshairVisible(false);
@@ -564,6 +634,7 @@ function resumeRound({ requestInput = true } = {}) {
   state.pauseMode = null;
   state.pauseActionPending = false;
   state.resumeCountdownStartedAt = 0;
+  state.suppressWindowedEscapeUntil = 0;
   $('pause-overlay').hidden = true;
   $('pause-menu').hidden = false;
   $('resume-countdown').hidden = true;
@@ -576,7 +647,7 @@ function resumeRound({ requestInput = true } = {}) {
   updateHud();
   updateInputMode();
   if (requestInput && document.pointerLockElement !== canvas) requestTrainingPointerLock();
-  requestAnimationFrame(frame);
+  scheduleFrame();
 }
 
 function renderResumeCountdown() {
@@ -607,13 +678,13 @@ function startWindowedResumeCountdown() {
   clearResumeCountdownTimer();
   state.pauseMode = 'countdown';
   state.resumeCountdownStartedAt = performance.now();
+  state.suppressWindowedEscapeUntil = 0;
   $('pause-menu').hidden = true;
   $('resume-countdown').hidden = false;
   $('resume-countdown-value').textContent = '3';
   $('target-label').textContent = '3 秒后继续';
   updateInputMode();
   renderResumeCountdown();
-  requestTrainingPointerLock({ allowPaused: true });
 }
 
 function beginPauseAction() {
@@ -626,26 +697,46 @@ function beginPauseAction() {
 async function continueTraining() {
   if (!beginPauseAction()) return;
 
+  if (document.pointerLockElement !== canvas) {
+    requestTrainingPointerLock({ allowPaused: true });
+  }
+  let fullscreenRequest;
   if (document.fullscreenElement !== arenaWrap) {
     try {
-      await arenaWrap.requestFullscreen?.();
+      fullscreenRequest = arenaWrap.requestFullscreen?.();
     } catch {
       // Continuing in windowed mode is still preferable to discarding the run.
     }
   }
-  resumeRound();
+  try {
+    await fullscreenRequest;
+  } catch {
+    // Continuing in windowed mode is still preferable to discarding the run.
+  }
+  resumeRound({ requestInput: false });
 }
 
 async function exitFullscreenAndResume() {
   if (!beginPauseAction()) return;
 
+  const pointerLockRequest = document.pointerLockElement === canvas
+    ? Promise.resolve(true)
+    : requestTrainingPointerLock({ allowPaused: true, timeoutMs: 500 });
+  let exitRequest;
   if (document.fullscreenElement) {
     try {
-      await document.exitFullscreen?.();
+      exitRequest = document.exitFullscreen?.();
     } catch {
       // The browser may already have completed its native Escape transition.
     }
   }
+  try {
+    await exitRequest;
+  } catch {
+    // The browser may already have completed its native Escape transition.
+  }
+  const pointerLockGranted = await pointerLockRequest;
+  synchronizePointerLockAfterFullscreenExit(pointerLockGranted);
   startWindowedResumeCountdown();
 }
 
@@ -727,8 +818,11 @@ document.addEventListener('fullscreenchange', () => {
   const wasFullscreen = state.fullscreenActive;
   state.fullscreenActive = document.fullscreenElement === arenaWrap;
   resize();
-  if (wasFullscreen && !state.fullscreenActive && state.running && !state.paused) {
-    pauseRound();
+  if (wasFullscreen && !state.fullscreenActive && state.running) {
+    if (!state.paused) pauseRound();
+    if (state.pauseMode === 'menu' && !state.pauseActionPending) {
+      state.suppressWindowedEscapeUntil = performance.now() + 250;
+    }
   }
 });
 document.addEventListener('pointerlockchange', () => {
@@ -753,12 +847,15 @@ document.addEventListener('pointerlockchange', () => {
     state.rawInputRequested = false;
     clearRawInputFallbackTimer();
     state.pointerClient = null;
-    if (state.paused) {
-      if (!state.fullscreenActive) cancelRound();
-    } else if (state.fullscreenActive) {
+    const action = resolvePointerUnlockAction(state);
+    if (action === 'fallback') {
+      state.rawInputUnavailable = true;
+      setInputStatus('原始输入已释放，继续时将使用兼容鼠标输入。');
+    } else if (action === 'pause') {
       pauseRound();
-    } else {
+    } else if (action === 'cancel') {
       cancelRound();
+      return;
     }
   } else if (state.running && !state.paused && state.rawInputRequested) {
     enableFallbackInput('指针锁定未启用，已自动切换兼容鼠标输入，可直接训练。');
@@ -771,13 +868,10 @@ document.addEventListener('pointerlockerror', () => {
 window.addEventListener('keydown', (event) => {
   if (event.repeat) return;
   if (event.key === 'Escape' && state.running) {
-    if (state.paused) {
-      if (!state.fullscreenActive) cancelRound();
-    } else if (state.fullscreenActive) {
-      pauseRound();
-    } else {
-      cancelRound();
-    }
+    const action = resolveEscapeAction(state, performance.now());
+    if (action === 'suppress') state.suppressWindowedEscapeUntil = 0;
+    else if (action === 'pause') pauseRound();
+    else if (action === 'cancel') cancelRound();
     return;
   }
   if (event.key.toLowerCase() === 'f') {

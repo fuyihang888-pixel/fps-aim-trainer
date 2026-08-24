@@ -73,6 +73,45 @@ export const getResumeCountdownSeconds = (
   return Math.max(0, Math.ceil((durationMs - elapsed) / 1000));
 };
 
+export const clampTargetToArena = (target, width, height, padding = 18) => {
+  if (!target) return target;
+
+  const safeWidth = Number.isFinite(width) && width > 0 ? width : 1;
+  const safeHeight = Number.isFinite(height) && height > 0 ? height : 1;
+  const radius = Number.isFinite(target.radius) && target.radius > 0 ? target.radius : 0;
+  const inset = radius + Math.max(0, padding);
+  const clampCoordinate = (value, size) => {
+    const minimum = Math.min(size / 2, inset);
+    const maximum = Math.max(minimum, size - inset);
+    const coordinate = Number.isFinite(value) ? value : size / 2;
+    return Math.max(minimum, Math.min(maximum, coordinate));
+  };
+
+  return {
+    ...target,
+    x: clampCoordinate(target.x, safeWidth),
+    y: clampCoordinate(target.y, safeHeight)
+  };
+};
+
+export const resolveEscapeAction = (trainingState, now) => {
+  if (!trainingState.running) return 'ignore';
+  if (!trainingState.paused) return trainingState.fullscreenActive ? 'pause' : 'cancel';
+  if (trainingState.fullscreenActive) return 'ignore';
+  if (now <= trainingState.suppressWindowedEscapeUntil) return 'suppress';
+  return 'cancel';
+};
+
+export const resolvePointerUnlockAction = (trainingState) => {
+  if (!trainingState.running) return 'ignore';
+  if (trainingState.paused) {
+    return trainingState.pauseMode === 'countdown' && !trainingState.fullscreenActive
+      ? 'cancel'
+      : 'fallback';
+  }
+  return trainingState.fullscreenActive ? 'pause' : 'cancel';
+};
+
 export const createRoundStats = () => ({
   clickHits: 0,
   clickShots: 0,
