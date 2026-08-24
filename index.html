@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#0c1118">
     <title>Vector Range | Aim Trainer</title>
-    <link rel="stylesheet" href="styles.css?v=20260824-18">
+    <link rel="stylesheet" href="styles.css?v=20260824-16">
   </head>
   <body>
     <main class="app-shell">
@@ -26,9 +26,9 @@
             <input id="sensitivity-input" type="number" inputmode="decimal" min="0.001" max="10" step="0.001" value="1" aria-describedby="sensitivity-note">
             <div class="sensitivity-readout"><span>每计数旋转</span><strong id="degrees-per-count">0.070000°</strong></div>
             <div class="sensitivity-readout"><span>当前游戏内灵敏度</span><strong id="sensitivity-profile" class="settings-value">1</strong></div>
-            <div class="sensitivity-readout"><span>输入模式</span><strong id="input-mode" class="settings-value">训练开始后启用</strong></div>
+            <div class="sensitivity-readout"><span>输入模式</span><strong id="input-mode">训练开始后启用</strong></div>
           </div>
-          <p id="sensitivity-note" class="input-note">页面使用鼠标当前硬件 DPI 产生的计数，只设置游戏内灵敏度。训练开始后，原始输入严格按 Valorant 的 0.07°/count 和 103° 水平视野计算；浏览器不支持原始输入时会进入近似兼容模式。</p>
+          <p id="sensitivity-note" class="input-note">直接使用鼠标当前硬件 DPI 产生的计数，页面仅设置游戏内灵敏度。原始输入按 Valorant 的 0.07°/count 换算，兼容输入为近似模式。</p>
 
           <div class="legend" aria-label="靶子说明">
             <div><span class="legend-dot click-dot"></span><span><b>CLICK</b> 点击命中</span></div>
@@ -52,27 +52,6 @@
             <div><span>连击</span><strong id="combo-value">0x</strong></div>
           </div>
           <div id="arena-wrap" class="arena-wrap">
-            <div class="range-scene" aria-hidden="true">
-              <div class="scene-sky"></div>
-              <div class="scene-backwall">
-                <span class="scene-wall-panel scene-wall-panel-left"></span>
-                <span class="scene-wall-panel scene-wall-panel-center"></span>
-                <span class="scene-wall-panel scene-wall-panel-right"></span>
-                <span class="scene-wall-light scene-wall-light-left"></span>
-                <span class="scene-wall-light scene-wall-light-right"></span>
-              </div>
-              <div class="scene-horizon"></div>
-              <div class="scene-floor">
-                <span class="scene-floor-line scene-floor-line-left"></span>
-                <span class="scene-floor-line scene-floor-line-center"></span>
-                <span class="scene-floor-line scene-floor-line-right"></span>
-                <span class="scene-floor-marker scene-floor-marker-one"></span>
-                <span class="scene-floor-marker scene-floor-marker-two"></span>
-              </div>
-              <div class="scene-side-rail scene-side-rail-left"></div>
-              <div class="scene-side-rail scene-side-rail-right"></div>
-              <div class="scene-platform"></div>
-            </div>
             <canvas id="arena" aria-label="定位训练场。点击红色 Click 靶，持续覆盖蓝色 Track 靶。"></canvas>
             <div id="aim-crosshair" class="aim-crosshair" hidden aria-hidden="true">
               <span class="crosshair-arm crosshair-arm-top"></span>
@@ -121,6 +100,6 @@
         </section>
       </section>
     </main>
-    <script type="module" src="app.js?v=20260824-18"></script>
+    <script type="module" src="app.js?v=20260824-16"></script>
   </body>
 </html>

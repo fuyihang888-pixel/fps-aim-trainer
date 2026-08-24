@@ -1,22 +1,20 @@
 import {
   DEFAULT_SENSITIVITY,
   RESUME_COUNTDOWN_MS,
-  applyValorantMouseCounts,
   calculateValorantDegreesPerCount,
-  calculateValorantProjection,
+  calculateValorantFallbackInputScale,
+  calculateValorantRawInputScale,
+  clampTargetToArena,
   getResumeCountdownSeconds,
-  moveTargetByScreenVelocity,
-  projectValorantAngles,
   resolveEscapeAction,
   resolvePointerUnlockAction,
-  screenPointToValorantAngles,
   shiftTrainingTimelineAfterPause,
   chooseTargetKind,
   createRoundStats,
   registerClick,
   registerTracking,
   summarizeRound
-} from './engine.js?v=20260824-18';
+} from './engine.js?v=20260824-16';
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('arena');
@@ -44,8 +42,6 @@ const MODES = {
 const saved = readStorage('vector-range') || {};
 const initialSensitivity = resolveInitialSensitivity(saved);
 const state = {
-  starting: false,
-  startToken: 0,
   running: false,
   paused: false,
   pauseStartedAt: 0,
@@ -60,18 +56,20 @@ const state = {
   stats: createRoundStats(),
   target: null,
   history: [],
+  pointer: { x: -100, y: -100 },
   targetStartedAt: 0,
   targetEndsAt: 0,
-  startedAt: 0,
   lastFrame: 0,
   roundEndsAt: 0,
-  view: { yawDeg: 0, pitchDeg: 0 },
-  projection: calculateValorantProjection(1, 1),
+  // Fallback pointer deltas are CSS pixels; locked deltas are raw counts.
+  fallbackInputScale: 1,
+  rawInputScale: 1,
   lockedSensitivity: DEFAULT_SENSITIVITY,
   rawInput: false,
   rawInputRequested: false,
   rawInputUnavailable: false,
-  inputRequest: null,
+  rawInputFallbackTimer: 0,
+  pointerClient: null,
   width: 0,
   height: 0,
   bestScores: createBestScores(saved)
@@ -202,7 +200,7 @@ function updateInputMode() {
     ? '原始鼠标输入 · Valorant'
     : state.rawInputUnavailable
       ? '兼容鼠标输入 · 近似模式'
-      : state.running || state.starting
+      : state.running
         ? '正在选择输入...'
         : '点击开始后自动选择';
 }
@@ -213,22 +211,27 @@ function setSensitivityControlsDisabled(disabled) {
 
 function resize() {
   const rect = arenaWrap.getBoundingClientRect();
-  const width = Math.max(1, arenaWrap.clientWidth || rect.width);
-  const height = Math.max(1, arenaWrap.clientHeight || rect.height);
   const ratio = window.devicePixelRatio || 1;
-  canvas.width = Math.round(width * ratio);
-  canvas.height = Math.round(height * ratio);
+  canvas.width = Math.round(rect.width * ratio);
+  canvas.height = Math.round(rect.height * ratio);
   context.setTransform(ratio, 0, 0, ratio, 0, 0);
-  state.width = width;
-  state.height = height;
-  state.projection = calculateValorantProjection(state.width, state.height);
+  state.width = rect.width;
+  state.height = rect.height;
+  state.pointer.x = Math.max(0, Math.min(state.width, state.pointer.x));
+  state.pointer.y = Math.max(0, Math.min(state.height, state.pointer.y));
+  if (state.running && state.target) {
+    state.target = clampTargetToArena(state.target, state.width, state.height);
+  }
+  if (state.running) {
+    state.rawInputScale = calculateValorantRawInputScale(state.lockedSensitivity, state.width);
+  }
   updateAimCrosshair();
 }
 
 function updateAimCrosshair() {
   if (!aimCrosshair) return;
-  aimCrosshair.style.left = '50%';
-  aimCrosshair.style.top = '50%';
+  aimCrosshair.style.left = `${state.pointer.x}px`;
+  aimCrosshair.style.top = `${state.pointer.y}px`;
 }
 
 function setAimCrosshairVisible(visible) {
@@ -239,6 +242,10 @@ function setAimCrosshairVisible(visible) {
 
 function setTrainingCursorHidden(hidden) {
   arenaWrap.classList.toggle('training-active', hidden);
+}
+
+function pointInTarget(x, y, target) {
+  return target && Math.hypot(x - target.x, y - target.y) <= target.radius;
 }
 
 function updateBestScore() {
@@ -268,6 +275,12 @@ function setModeControlsDisabled(disabled) {
   });
 }
 
+function clearRawInputFallbackTimer() {
+  if (!state.rawInputFallbackTimer) return;
+  window.clearTimeout(state.rawInputFallbackTimer);
+  state.rawInputFallbackTimer = 0;
+}
+
 function clearResumeCountdownTimer() {
   if (!state.resumeCountdownTimer) return;
   window.clearTimeout(state.resumeCountdownTimer);
@@ -293,88 +306,69 @@ function setPauseActionsDisabled(disabled) {
 
 function setInputStatus(message) {
   const status = $('input-error');
-  const changed = status.textContent !== message || status.hidden === Boolean(message);
   status.textContent = message;
   status.hidden = !message;
-  if (changed && state.width > 0) resize();
 }
 
-function setFallbackInput(message = '原始输入未启用，已自动切换兼容鼠标输入，可直接训练。') {
+function enableFallbackInput(message = '原始输入未启用，已自动切换兼容鼠标输入，可直接训练。') {
   state.rawInputRequested = false;
   state.rawInput = false;
   state.rawInputUnavailable = true;
+  // A delayed lock request can still complete after the fallback timer. Release
+  // it so subsequent pointer events continue through the normal client path.
   if (document.pointerLockElement === canvas) document.exitPointerLock?.();
-  if (state.running || state.starting) setInputStatus(message);
+  state.pointerClient = null;
+  clearRawInputFallbackTimer();
+  if (state.running) setInputStatus(message);
   updateInputMode();
 }
 
-function cancelInputRequest() {
-  state.inputRequest?.cancel();
-}
-
-function requestTrainingPointerLock({ allowPaused = false, timeoutMs = 1200, token = state.startToken } = {}) {
-  const canRequest = state.starting || (state.running && (!state.paused || allowPaused));
-  if (!canRequest) return Promise.resolve('cancelled');
-  cancelInputRequest();
-
+function requestTrainingPointerLock({ allowPaused = false, timeoutMs = 1200 } = {}) {
+  if (!state.running || (state.paused && !allowPaused)) return Promise.resolve(false);
   if (document.pointerLockElement === canvas) {
     state.rawInputRequested = true;
     state.rawInput = true;
     state.rawInputUnavailable = false;
+    clearRawInputFallbackTimer();
     setInputStatus('');
     updateInputMode();
-    return Promise.resolve('raw');
+    return Promise.resolve(true);
   }
   if (!canvas.requestPointerLock) {
-    setFallbackInput('当前浏览器未提供原始输入，已自动切换兼容鼠标输入，可直接训练。');
-    return Promise.resolve('fallback');
+    enableFallbackInput('当前浏览器未提供原始输入，已自动切换兼容鼠标输入，可直接训练。');
+    return Promise.resolve(false);
   }
 
   state.rawInputRequested = true;
-  state.rawInput = false;
   state.rawInputUnavailable = false;
+  clearRawInputFallbackTimer();
   updateInputMode();
   return new Promise((resolve) => {
     let settled = false;
-    let timeoutId = 0;
-    const cleanup = () => {
-      if (timeoutId) window.clearTimeout(timeoutId);
-      document.removeEventListener('pointerlockchange', handleChange);
-      document.removeEventListener('pointerlockerror', handleError);
-      if (state.inputRequest?.token === token) state.inputRequest = null;
-    };
-    const finish = (mode, message) => {
+    const finish = (locked) => {
       if (settled) return;
       settled = true;
-      cleanup();
-      if (mode === 'raw') {
-        state.rawInputRequested = true;
+      document.removeEventListener('pointerlockchange', handleChange);
+      document.removeEventListener('pointerlockerror', handleError);
+      if (locked) {
+        clearRawInputFallbackTimer();
         state.rawInput = true;
         state.rawInputUnavailable = false;
         setInputStatus('');
         updateInputMode();
-      } else if (mode === 'fallback') {
-        setFallbackInput(message);
-      } else {
-        state.rawInputRequested = false;
-        state.rawInput = false;
-        if (document.pointerLockElement === canvas) document.exitPointerLock?.();
       }
-      resolve(mode);
+      resolve(locked);
     };
     const fallback = () => {
-      finish('fallback');
+      if (state.running && state.rawInputRequested && !state.rawInput) enableFallbackInput();
+      finish(false);
     };
     const handleChange = () => {
-      if (document.pointerLockElement === canvas) finish('raw');
+      if (document.pointerLockElement === canvas) finish(true);
       else fallback();
     };
     const handleError = () => fallback();
 
-    state.inputRequest = {
-      token,
-      cancel: () => finish('cancelled')
-    };
     document.addEventListener('pointerlockchange', handleChange);
     document.addEventListener('pointerlockerror', handleError);
     try {
@@ -383,80 +377,59 @@ function requestTrainingPointerLock({ allowPaused = false, timeoutMs = 1200, tok
       // the operating system, unlike Valorant's raw hardware counts.
       const request = canvas.requestPointerLock({ unadjustedMovement: true });
       request?.then?.(() => {
-        if (document.pointerLockElement === canvas) finish('raw');
+        if (document.pointerLockElement === canvas) finish(true);
         else fallback();
       }, fallback);
-      if (!settled) timeoutId = window.setTimeout(fallback, timeoutMs);
+      state.rawInputFallbackTimer = window.setTimeout(fallback, timeoutMs);
     } catch {
       fallback();
     }
   });
 }
 
-function synchronizePointerLockAfterFullscreenExit(inputMode) {
-  if (inputMode === 'raw' && document.pointerLockElement === canvas) return;
-  setFallbackInput();
+function synchronizePointerLockAfterFullscreenExit(requestSucceeded) {
+  const locked = requestSucceeded && document.pointerLockElement === canvas;
+  clearRawInputFallbackTimer();
+  state.rawInputRequested = locked;
+  state.rawInput = locked;
+  state.rawInputUnavailable = !locked;
+  state.pointerClient = null;
+  setInputStatus(locked ? '' : '原始输入未启用，已自动切换兼容鼠标输入，可直接训练。');
+  updateInputMode();
 }
 
-function projectTarget(target) {
-  if (!target) return null;
-  return projectValorantAngles(
-    target.yawDeg,
-    target.pitchDeg,
-    state.view,
-    state.width,
-    state.height
-  );
-}
-
-function crosshairCoversTarget(target) {
-  const point = projectTarget(target);
-  return point?.visible && Math.hypot(
-    point.x - state.projection.width / 2,
-    point.y - state.projection.height / 2
-  ) <= target.radius;
-}
-
-function createTarget(now = performance.now()) {
+function createTarget() {
   const kind = chooseTargetKind(state.mode, state.history);
   state.history.push(kind);
 
   const margin = kind === 'click' ? 70 : 95;
   const radius = kind === 'click' ? 25 + Math.random() * 9 : 34;
-  const x = margin + Math.random() * Math.max(1, state.projection.width - margin * 2);
-  const y = margin + Math.random() * Math.max(1, state.projection.height - margin * 2);
+  const x = margin + Math.random() * Math.max(1, state.width - margin * 2);
+  const y = margin + Math.random() * Math.max(1, state.height - margin * 2);
   const duration = kind === 'click' ? 1050 : 2300;
   const speed = kind === 'track' ? 210 : 0;
   const angle = Math.random() * Math.PI * 2;
-  const angles = screenPointToValorantAngles(
-    x,
-    y,
-    state.view,
-    state.projection.width,
-    state.projection.height
-  );
 
   state.target = {
     kind,
-    ...angles,
+    x,
+    y,
     radius,
     vx: Math.cos(angle) * speed,
     vy: Math.sin(angle) * speed,
     duration
   };
-  state.targetStartedAt = now;
+  state.targetStartedAt = performance.now();
   state.targetEndsAt = state.targetStartedAt + duration;
   $('target-label').textContent = kind === 'click' ? 'CLICK · 点击靶心' : 'TRACK · 保持覆盖';
 }
 
 function drawTarget(target, now) {
-  const point = projectTarget(target);
-  if (!point?.visible) return;
   const progress = Math.min(1, (now - state.targetStartedAt) / target.duration);
   const color = target.kind === 'click' ? '#ff5b6e' : '#4acbff';
 
   context.save();
-  context.translate(point.x, point.y);
+  context.translate(target.x, target.y);
   context.strokeStyle = color;
   context.fillStyle = color;
   context.lineWidth = 2;
@@ -518,55 +491,36 @@ function frame(now) {
   const target = state.target;
 
   if (target.kind === 'track') {
-    state.target = moveTargetByScreenVelocity(
-      target,
-      state.view,
-      state.width,
-      state.height,
-      elapsed
-    );
-    const covered = crosshairCoversTarget(state.target) ? elapsed : 0;
+    target.x += target.vx * elapsed / 1000;
+    target.y += target.vy * elapsed / 1000;
+    if (target.x < target.radius + 18 || target.x > state.width - target.radius - 18) target.vx *= -1;
+    if (target.y < target.radius + 18 || target.y > state.height - target.radius - 18) target.vy *= -1;
+    const covered = pointInTarget(state.pointer.x, state.pointer.y, target) ? elapsed : 0;
     state.stats = registerTracking(state.stats, covered, elapsed);
   }
 
-  if (now >= state.targetEndsAt) createTarget(now);
+  if (now >= state.targetEndsAt) createTarget();
   drawTarget(state.target, now);
   updateHud();
   scheduleFrame();
 }
 
-function restoreStartControls() {
-  $('start-button').disabled = false;
-  $('start-button').innerHTML = '开始训练 <span>60S</span>';
-  setModeControlsDisabled(false);
-  setSensitivityControlsDisabled(false);
-}
+function startRound() {
+  if (state.running) return;
 
-function cancelPendingStart() {
-  if (!state.starting) return;
-  state.starting = false;
-  state.startToken += 1;
-  state.rawInputRequested = false;
-  state.rawInput = false;
+  resize();
+  const sensitivity = normalizeSensitivityInput();
+  if (!sensitivity) return;
+  state.lockedSensitivity = sensitivity;
+  renderSensitivityProfile(sensitivity);
+  state.fallbackInputScale = calculateValorantFallbackInputScale(state.lockedSensitivity);
+  state.rawInputScale = calculateValorantRawInputScale(state.lockedSensitivity, state.width);
   state.rawInputUnavailable = false;
-  cancelInputRequest();
-  setTrainingCursorHidden(false);
-  setAimCrosshairVisible(false);
-  document.exitPointerLock?.();
-  setInputStatus('');
-  restoreStartControls();
-  renderModeSelection();
-  updateInputMode();
-}
-
-function beginRoundAfterInput(token, inputMode) {
-  if (!state.starting || token !== state.startToken || inputMode === 'cancelled') return;
-  if (inputMode === 'raw' && document.pointerLockElement !== canvas) {
-    setFallbackInput('原始输入在训练开始前已释放，已自动切换兼容鼠标输入。');
-  }
-
-  const startedAt = performance.now();
-  state.starting = false;
+  state.rawInput = false;
+  state.rawInputRequested = false;
+  clearRawInputFallbackTimer();
+  clearResumeCountdownTimer();
+  cancelScheduledFrame();
   state.running = true;
   state.paused = false;
   state.pauseStartedAt = 0;
@@ -578,73 +532,40 @@ function beginRoundAfterInput(token, inputMode) {
   state.stats = createRoundStats();
   state.history = [];
   state.target = null;
-  state.view = { yawDeg: 0, pitchDeg: 0 };
-  state.startedAt = startedAt;
-  state.roundEndsAt = startedAt + ROUND_DURATION_MS;
-  state.lastFrame = startedAt;
+  state.pointer = { x: state.width / 2, y: state.height / 2 };
+  state.pointerClient = null;
   setTrainingCursorHidden(true);
   setAimCrosshairVisible(true);
+  state.roundEndsAt = performance.now() + ROUND_DURATION_MS;
+  state.lastFrame = performance.now();
   $('ready-overlay').hidden = true;
   $('result-overlay').hidden = true;
   $('pause-overlay').hidden = true;
-  $('start-button').textContent = '训练中...';
-  createTarget(startedAt);
-  updateHud();
-  updateInputMode();
-  scheduleFrame();
-}
-
-async function startRound() {
-  if (state.running || state.starting) return;
-
-  resize();
-  const sensitivity = normalizeSensitivityInput();
-  if (!sensitivity) return;
-  state.lockedSensitivity = sensitivity;
-  renderSensitivityProfile(sensitivity);
-  state.rawInputUnavailable = false;
-  state.rawInput = false;
-  state.rawInputRequested = false;
-  clearResumeCountdownTimer();
-  cancelScheduledFrame();
-  state.starting = true;
-  const token = ++state.startToken;
   setInputStatus('');
-  $('time-value').textContent = '01:00';
-  $('score-value').textContent = '0000';
-  $('combo-value').textContent = '0x';
   $('start-button').disabled = true;
-  $('start-button').textContent = '正在启用输入...';
+  $('start-button').textContent = '训练中...';
   setModeControlsDisabled(true);
   setSensitivityControlsDisabled(true);
-  updateInputMode();
-
-  // Pointer Lock must be requested synchronously inside the click activation.
-  const inputMode = await requestTrainingPointerLock({ token });
-  beginRoundAfterInput(token, inputMode);
+  requestTrainingPointerLock();
+  createTarget();
+  scheduleFrame();
 }
 
 function resetRoundInteraction() {
   clearResumeCountdownTimer();
   cancelScheduledFrame();
-  state.starting = false;
   state.running = false;
-  state.startToken += 1;
   state.paused = false;
   state.pauseStartedAt = 0;
   state.pauseMode = null;
   state.pauseActionPending = false;
   state.resumeCountdownStartedAt = 0;
   state.suppressWindowedEscapeUntil = 0;
-  state.startedAt = 0;
-  state.lastFrame = 0;
-  state.roundEndsAt = 0;
-  state.targetStartedAt = 0;
-  state.targetEndsAt = 0;
   state.rawInputRequested = false;
   state.rawInput = false;
   state.rawInputUnavailable = false;
-  cancelInputRequest();
+  state.pointerClient = null;
+  clearRawInputFallbackTimer();
   setTrainingCursorHidden(false);
   setAimCrosshairVisible(false);
   $('pause-overlay').hidden = true;
@@ -701,7 +622,10 @@ function cancelRound() {
   $('combo-value').textContent = '0x';
   $('result-overlay').hidden = true;
   $('ready-overlay').hidden = false;
-  restoreStartControls();
+  $('start-button').disabled = false;
+  $('start-button').innerHTML = '开始训练 <span>60S</span>';
+  setModeControlsDisabled(false);
+  setSensitivityControlsDisabled(false);
   setInputStatus('');
   renderModeSelection();
   updateInputMode();
@@ -716,7 +640,8 @@ function pauseRound() {
   state.pauseActionPending = false;
   state.rawInputRequested = false;
   state.rawInput = false;
-  cancelInputRequest();
+  state.pointerClient = null;
+  clearRawInputFallbackTimer();
   clearResumeCountdownTimer();
   cancelScheduledFrame();
   document.exitPointerLock?.();
@@ -732,7 +657,7 @@ function pauseRound() {
   $('continue-training-button').focus();
 }
 
-function resumeRound({ requestInput = false } = {}) {
+function resumeRound({ requestInput = true } = {}) {
   if (!state.running || !state.paused) return;
 
   const resumedAt = performance.now();
@@ -761,6 +686,7 @@ function resumeRound({ requestInput = false } = {}) {
     : 'TRACK · 保持覆盖';
   updateHud();
   updateInputMode();
+  if (requestInput && document.pointerLockElement !== canvas) requestTrainingPointerLock();
   scheduleFrame();
 }
 
@@ -811,8 +737,9 @@ function beginPauseAction() {
 async function continueTraining() {
   if (!beginPauseAction()) return;
 
-  const token = ++state.startToken;
-  const inputRequest = requestTrainingPointerLock({ allowPaused: true, token });
+  if (document.pointerLockElement !== canvas) {
+    requestTrainingPointerLock({ allowPaused: true });
+  }
   let fullscreenRequest;
   if (document.fullscreenElement !== arenaWrap) {
     try {
@@ -826,25 +753,15 @@ async function continueTraining() {
   } catch {
     // Continuing in windowed mode is still preferable to discarding the run.
   }
-  const inputMode = await inputRequest;
-  if (
-    token !== state.startToken
-    || inputMode === 'cancelled'
-    || !state.running
-    || !state.paused
-    || !state.pauseActionPending
-  ) return;
-  if (inputMode === 'raw' && document.pointerLockElement !== canvas) setFallbackInput();
   resumeRound({ requestInput: false });
 }
 
 async function exitFullscreenAndResume() {
   if (!beginPauseAction()) return;
 
-  const token = ++state.startToken;
   const pointerLockRequest = document.pointerLockElement === canvas
-    ? Promise.resolve('raw')
-    : requestTrainingPointerLock({ allowPaused: true, timeoutMs: 500, token });
+    ? Promise.resolve(true)
+    : requestTrainingPointerLock({ allowPaused: true, timeoutMs: 500 });
   let exitRequest;
   if (document.fullscreenElement) {
     try {
@@ -858,15 +775,8 @@ async function exitFullscreenAndResume() {
   } catch {
     // The browser may already have completed its native Escape transition.
   }
-  const inputMode = await pointerLockRequest;
-  if (
-    token !== state.startToken
-    || inputMode === 'cancelled'
-    || !state.running
-    || !state.paused
-    || !state.pauseActionPending
-  ) return;
-  synchronizePointerLockAfterFullscreenExit(inputMode);
+  const pointerLockGranted = await pointerLockRequest;
+  synchronizePointerLockAfterFullscreenExit(pointerLockGranted);
   startWindowedResumeCountdown();
 }
 
@@ -884,9 +794,11 @@ async function exitFullscreenAndCancel() {
 }
 
 function toggleFullscreen() {
-  if (state.paused || state.starting) return;
+  if (state.paused) return;
   if (!document.fullscreenElement) {
-    arenaWrap.requestFullscreen?.().catch(() => {});
+    arenaWrap.requestFullscreen?.().then(() => {
+      if (state.running) requestTrainingPointerLock();
+    }).catch(() => {});
   } else {
     document.exitFullscreen?.();
   }
@@ -896,18 +808,27 @@ function pointerPosition(event) {
   if (!state.running || state.paused) return;
   if (document.pointerLockElement === canvas) {
     if (!state.rawInput) return;
-  } else if (!state.rawInputUnavailable) {
+    state.pointer.x = Math.max(0, Math.min(state.width, state.pointer.x + event.movementX * state.rawInputScale));
+    state.pointer.y = Math.max(0, Math.min(state.height, state.pointer.y + event.movementY * state.rawInputScale));
+    updateAimCrosshair();
     return;
   }
 
-  // Unadjusted Pointer Lock reports hardware counts. Compatible movement is a
-  // CSS-pixel approximation, but follows the identical Valorant angle formula.
-  state.view = applyValorantMouseCounts(
-    state.view,
-    event.movementX,
-    event.movementY,
-    state.lockedSensitivity
-  );
+  const rect = canvas.getBoundingClientRect();
+  const nextClient = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  if (!state.running || !state.pointerClient) {
+    state.pointerClient = nextClient;
+    state.pointer = nextClient;
+    updateAimCrosshair();
+    return;
+  }
+
+  const deltaX = (nextClient.x - state.pointerClient.x) * state.fallbackInputScale;
+  const deltaY = (nextClient.y - state.pointerClient.y) * state.fallbackInputScale;
+  state.pointerClient = nextClient;
+  state.pointer.x = Math.max(0, Math.min(state.width, state.pointer.x + deltaX));
+  state.pointer.y = Math.max(0, Math.min(state.height, state.pointer.y + deltaY));
+  updateAimCrosshair();
 }
 
 $('sensitivity-input').addEventListener('input', () => {
@@ -925,9 +846,10 @@ canvas.addEventListener('pointermove', pointerPosition);
 canvas.addEventListener('pointerdown', (event) => {
   if (!state.running || state.paused || state.target?.kind !== 'click') return;
 
-  const hit = crosshairCoversTarget(state.target);
+  pointerPosition(event);
+  const hit = pointInTarget(state.pointer.x, state.pointer.y, state.target);
   state.stats = registerClick(state.stats, hit, performance.now() - state.targetStartedAt);
-  if (hit) createTarget(performance.now());
+  if (hit) createTarget();
 });
 $('start-button').addEventListener('click', startRound);
 $('restart-button').addEventListener('click', startRound);
@@ -936,10 +858,6 @@ $('continue-training-button').addEventListener('click', continueTraining);
 $('exit-and-end-button').addEventListener('click', exitFullscreenAndCancel);
 $('fullscreen-button').addEventListener('click', toggleFullscreen);
 window.addEventListener('resize', resize);
-if (typeof ResizeObserver === 'function') {
-  const arenaResizeObserver = new ResizeObserver(resize);
-  arenaResizeObserver.observe(arenaWrap);
-}
 document.addEventListener('fullscreenchange', () => {
   const wasFullscreen = state.fullscreenActive;
   state.fullscreenActive = document.fullscreenElement === arenaWrap;
@@ -954,8 +872,9 @@ document.addEventListener('fullscreenchange', () => {
 document.addEventListener('pointerlockchange', () => {
   const wasRawInput = state.rawInput;
   const lockedToCanvas = document.pointerLockElement === canvas;
-  // A timed-out or cancelled request may still complete later. Never let that
-  // stale event change the input formula in the middle of an active segment.
+  // A lock promise/event can arrive after the fallback path has already
+  // invalidated the request. Do not leave the document locked in that state:
+  // pointerPosition would otherwise ignore all compatible pointer events.
   if (lockedToCanvas && !state.rawInputRequested) {
     state.rawInput = false;
     document.exitPointerLock?.();
@@ -965,10 +884,13 @@ document.addEventListener('pointerlockchange', () => {
 
   state.rawInput = state.rawInputRequested && lockedToCanvas;
   if (state.rawInput) {
+    clearRawInputFallbackTimer();
     state.rawInputUnavailable = false;
     setInputStatus('');
   } else if (wasRawInput && state.running) {
     state.rawInputRequested = false;
+    clearRawInputFallbackTimer();
+    state.pointerClient = null;
     const action = resolvePointerUnlockAction(state);
     if (action === 'fallback') {
       state.rawInputUnavailable = true;
@@ -979,15 +901,16 @@ document.addEventListener('pointerlockchange', () => {
       cancelRound();
       return;
     }
+  } else if (state.running && !state.paused && state.rawInputRequested) {
+    enableFallbackInput('指针锁定未启用，已自动切换兼容鼠标输入，可直接训练。');
   }
   updateInputMode();
 });
+document.addEventListener('pointerlockerror', () => {
+  if (state.running && state.rawInputRequested) enableFallbackInput();
+});
 window.addEventListener('keydown', (event) => {
   if (event.repeat) return;
-  if (event.key === 'Escape' && state.starting) {
-    cancelPendingStart();
-    return;
-  }
   if (event.key === 'Escape' && state.running) {
     const action = resolveEscapeAction(state, performance.now());
     if (action === 'suppress') state.suppressWindowedEscapeUntil = 0;
