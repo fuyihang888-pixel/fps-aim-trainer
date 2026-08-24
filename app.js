@@ -1,11 +1,8 @@
 import {
-  DEFAULT_DPI,
   DEFAULT_SENSITIVITY,
   RESUME_COUNTDOWN_MS,
-  calculateEDpi,
-  calculateValorantCm360,
+  calculateValorantDegreesPerCount,
   calculateValorantFallbackInputScale,
-  calculateValorantInputScale,
   calculateValorantRawInputScale,
   clampTargetToArena,
   getResumeCountdownSeconds,
@@ -17,7 +14,7 @@ import {
   registerClick,
   registerTracking,
   summarizeRound
-} from './engine.js?v=20260824-15';
+} from './engine.js?v=20260824-16';
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('arena');
@@ -25,7 +22,7 @@ const context = canvas.getContext('2d');
 const arenaWrap = $('arena-wrap');
 const aimCrosshair = $('aim-crosshair');
 const ROUND_DURATION_MS = 60_000;
-const SENSITIVITY_SETTINGS_VERSION = 1;
+const SENSITIVITY_SETTINGS_VERSION = 2;
 
 const MODES = {
   static: {
@@ -43,7 +40,7 @@ const MODES = {
 };
 
 const saved = readStorage('vector-range') || {};
-const initialSettings = resolveInitialSensitivitySettings(saved);
+const initialSensitivity = resolveInitialSensitivity(saved);
 const state = {
   running: false,
   paused: false,
@@ -67,7 +64,6 @@ const state = {
   // Fallback pointer deltas are CSS pixels; locked deltas are raw counts.
   fallbackInputScale: 1,
   rawInputScale: 1,
-  lockedDpi: DEFAULT_DPI,
   lockedSensitivity: DEFAULT_SENSITIVITY,
   rawInput: false,
   rawInputRequested: false,
@@ -79,8 +75,8 @@ const state = {
   bestScores: createBestScores(saved)
 };
 
-$('dpi-input').value = initialSettings.dpi;
-$('sensitivity-input').value = initialSettings.sensitivity;
+$('sensitivity-input').value = initialSensitivity;
+saveSensitivitySetting(initialSensitivity);
 
 function readStorage(key) {
   try {
@@ -113,7 +109,6 @@ function saveStorage(result) {
     const recent = Array.isArray(previous.recent) ? previous.recent : [];
     localStorage.setItem('vector-range', JSON.stringify({
       sensitivitySettingsVersion: SENSITIVITY_SETTINGS_VERSION,
-      dpi: state.lockedDpi,
       sensitivity: state.lockedSensitivity,
       mode: state.mode,
       best: state.bestScores.mixed,
@@ -125,17 +120,18 @@ function saveStorage(result) {
   }
 }
 
-function saveSensitivitySettings(settings) {
+function saveSensitivitySetting(sensitivity) {
   try {
     const previous = readStorage('vector-range') || {};
-    localStorage.setItem('vector-range', JSON.stringify({
+    const next = {
       ...previous,
       sensitivitySettingsVersion: SENSITIVITY_SETTINGS_VERSION,
-      dpi: settings.dpi,
-      sensitivity: settings.sensitivity
-    }));
+      sensitivity
+    };
+    delete next.dpi;
+    localStorage.setItem('vector-range', JSON.stringify(next));
   } catch {
-    // Per-user settings remain usable for the current session if storage is blocked.
+    // The current session remains usable if browser storage is blocked.
   }
 }
 
@@ -143,76 +139,56 @@ function formatDecimal(value, digits) {
   return Number(value.toFixed(digits)).toString();
 }
 
-function resolveInitialSensitivitySettings(settings) {
-  if (settings.sensitivitySettingsVersion !== SENSITIVITY_SETTINGS_VERSION) {
-    return { dpi: DEFAULT_DPI, sensitivity: DEFAULT_SENSITIVITY };
-  }
-  const dpiInput = $('dpi-input');
+function resolveInitialSensitivity(settings) {
   const sensitivityInput = $('sensitivity-input');
-  dpiInput.value = Number(settings.dpi);
   sensitivityInput.value = Number(settings.sensitivity);
-  return readSensitivityInputs() || {
-    dpi: DEFAULT_DPI,
-    sensitivity: DEFAULT_SENSITIVITY
-  };
+  return readSensitivityInput() ?? DEFAULT_SENSITIVITY;
 }
 
-function readSensitivityInputs() {
-  const dpiInput = $('dpi-input');
+function readSensitivityInput() {
   const sensitivityInput = $('sensitivity-input');
-  const dpi = Number(dpiInput.value);
   const sensitivity = Number(sensitivityInput.value);
   if (
-    !dpiInput.value.trim()
-    || !sensitivityInput.value.trim()
-    || !dpiInput.checkValidity()
+    !sensitivityInput.value.trim()
     || !sensitivityInput.checkValidity()
-    || !Number.isFinite(dpi)
     || !Number.isFinite(sensitivity)
-    || dpi <= 0
     || sensitivity <= 0
   ) return null;
-  return { dpi, sensitivity };
+  return sensitivity;
 }
 
-function renderSensitivityProfile(settings) {
-  $('sensitivity-profile').textContent = settings
-    ? `${formatDecimal(settings.dpi, 3)} DPI × ${formatDecimal(settings.sensitivity, 6)}`
+function renderSensitivityProfile(sensitivity) {
+  $('sensitivity-profile').textContent = sensitivity
+    ? formatDecimal(sensitivity, 6)
     : '等待有效参数';
 }
 
 function updateSensitivity() {
-  const settings = readSensitivityInputs();
-  if (!settings) {
-    $('edpi-value').textContent = '—';
-    $('effective-sensitivity').textContent = '—';
-    $('cm360-value').textContent = '—';
+  const sensitivity = readSensitivityInput();
+  if (!sensitivity) {
+    $('degrees-per-count').textContent = '—';
     if (!state.running) renderSensitivityProfile(null);
     return null;
   }
-  $('edpi-value').textContent = formatDecimal(calculateEDpi(settings.dpi, settings.sensitivity), 3);
-  $('effective-sensitivity').textContent = `${calculateValorantInputScale(settings.dpi, settings.sensitivity).toFixed(6)}x`;
-  $('cm360-value').textContent = `${calculateValorantCm360(settings.dpi, settings.sensitivity).toFixed(2)} cm`;
-  if (!state.running) renderSensitivityProfile(settings);
-  return settings;
+  $('degrees-per-count').textContent = `${calculateValorantDegreesPerCount(sensitivity).toFixed(6)}°`;
+  if (!state.running) renderSensitivityProfile(sensitivity);
+  return sensitivity;
 }
 
-function normalizeSensitivityInputs() {
-  const settings = readSensitivityInputs();
-  if (!settings) {
-    setInputStatus('请输入有效的鼠标硬件 DPI 和游戏内灵敏度。');
-    const invalidInput = [$('dpi-input'), $('sensitivity-input')]
-      .find((input) => !input.value.trim() || !input.checkValidity());
-    invalidInput?.focus();
-    invalidInput?.reportValidity();
+function normalizeSensitivityInput() {
+  const sensitivity = readSensitivityInput();
+  if (!sensitivity) {
+    setInputStatus('请输入有效的游戏内灵敏度。');
+    const input = $('sensitivity-input');
+    input.focus();
+    input.reportValidity();
     return null;
   }
-  $('dpi-input').value = settings.dpi;
-  $('sensitivity-input').value = settings.sensitivity;
+  $('sensitivity-input').value = sensitivity;
   updateSensitivity();
-  saveSensitivitySettings(settings);
+  saveSensitivitySetting(sensitivity);
   setInputStatus('');
-  return settings;
+  return sensitivity;
 }
 
 function updateInputMode() {
@@ -230,9 +206,7 @@ function updateInputMode() {
 }
 
 function setSensitivityControlsDisabled(disabled) {
-  ['dpi-input', 'sensitivity-input'].forEach((id) => {
-    $(id).disabled = disabled;
-  });
+  $('sensitivity-input').disabled = disabled;
 }
 
 function resize() {
@@ -535,11 +509,10 @@ function startRound() {
   if (state.running) return;
 
   resize();
-  const settings = normalizeSensitivityInputs();
-  if (!settings) return;
-  state.lockedDpi = settings.dpi;
-  state.lockedSensitivity = settings.sensitivity;
-  renderSensitivityProfile(settings);
+  const sensitivity = normalizeSensitivityInput();
+  if (!sensitivity) return;
+  state.lockedSensitivity = sensitivity;
+  renderSensitivityProfile(sensitivity);
   state.fallbackInputScale = calculateValorantFallbackInputScale(state.lockedSensitivity);
   state.rawInputScale = calculateValorantRawInputScale(state.lockedSensitivity, state.width);
   state.rawInputUnavailable = false;
@@ -858,16 +831,14 @@ function pointerPosition(event) {
   updateAimCrosshair();
 }
 
-['dpi-input', 'sensitivity-input'].forEach((id) => {
-  $(id).addEventListener('input', () => {
-    const settings = updateSensitivity();
-    if (settings) {
-      saveSensitivitySettings(settings);
-      setInputStatus('');
-    }
-  });
-  $(id).addEventListener('blur', normalizeSensitivityInputs);
+$('sensitivity-input').addEventListener('input', () => {
+  const sensitivity = updateSensitivity();
+  if (sensitivity) {
+    saveSensitivitySetting(sensitivity);
+    setInputStatus('');
+  }
 });
+$('sensitivity-input').addEventListener('blur', normalizeSensitivityInput);
 document.querySelectorAll('.mode-button').forEach((button) => {
   button.addEventListener('click', () => selectMode(button.dataset.mode));
 });

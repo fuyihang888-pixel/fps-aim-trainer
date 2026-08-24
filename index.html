@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#0c1118">
     <title>Vector Range | Aim Trainer</title>
-    <link rel="stylesheet" href="styles.css?v=20260824-15">
+    <link rel="stylesheet" href="styles.css?v=20260824-16">
   </head>
   <body>
     <main class="app-shell">
@@ -22,17 +22,13 @@
           <p class="panel-copy">静态点按与移动跟枪交替出现。每局 60 秒。</p>
 
           <div class="settings-group">
-            <label for="dpi-input">鼠标当前硬件 DPI</label>
-            <input id="dpi-input" type="number" inputmode="decimal" min="50" max="30000" step="1" value="1000" aria-describedby="sensitivity-note">
-            <label for="sensitivity-input">游戏内灵敏度</label>
+            <label for="sensitivity-input">游戏内灵敏度（Valorant）</label>
             <input id="sensitivity-input" type="number" inputmode="decimal" min="0.001" max="10" step="0.001" value="1" aria-describedby="sensitivity-note">
-            <div class="edpi-readout"><span>eDPI</span><strong id="edpi-value">1000</strong></div>
-            <div class="edpi-readout"><span>Valorant 生效倍率</span><strong id="effective-sensitivity">1.000000x</strong></div>
-            <div class="edpi-readout"><span>Valorant cm/360</span><strong id="cm360-value">13.06 cm</strong></div>
-            <div class="edpi-readout"><span>当前参数</span><strong id="sensitivity-profile" class="settings-value">1000 DPI × 1</strong></div>
-            <div class="edpi-readout"><span>输入模式</span><strong id="input-mode">训练开始后启用</strong></div>
+            <div class="sensitivity-readout"><span>每计数旋转</span><strong id="degrees-per-count">0.070000°</strong></div>
+            <div class="sensitivity-readout"><span>当前游戏内灵敏度</span><strong id="sensitivity-profile" class="settings-value">1</strong></div>
+            <div class="sensitivity-readout"><span>输入模式</span><strong id="input-mode">训练开始后启用</strong></div>
           </div>
-          <p id="sensitivity-note" class="input-note">网页不会读取或修改鼠标硬件 DPI；请先在鼠标驱动中设置，再填写相同数值。设置仅保存在本机浏览器。原始输入按 Valorant 的 0.07°/count 换算，兼容输入为近似模式。</p>
+          <p id="sensitivity-note" class="input-note">直接使用鼠标当前硬件 DPI 产生的计数，页面仅设置游戏内灵敏度。原始输入按 Valorant 的 0.07°/count 换算，兼容输入为近似模式。</p>
 
           <div class="legend" aria-label="靶子说明">
             <div><span class="legend-dot click-dot"></span><span><b>CLICK</b> 点击命中</span></div>
@@ -104,6 +100,6 @@
         </section>
       </section>
     </main>
-    <script type="module" src="app.js?v=20260824-15"></script>
+    <script type="module" src="app.js?v=20260824-16"></script>
   </body>
 </html>
