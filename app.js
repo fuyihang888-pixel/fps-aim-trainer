@@ -16,7 +16,7 @@ import {
   registerClick,
   registerTracking,
   summarizeRound
-} from './engine.js?v=20260824-17';
+} from './engine.js?v=20260824-18';
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('arena');

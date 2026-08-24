@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#0c1118">
     <title>Vector Range | Aim Trainer</title>
-    <link rel="stylesheet" href="styles.css?v=20260824-17">
+    <link rel="stylesheet" href="styles.css?v=20260824-18">
   </head>
   <body>
     <main class="app-shell">
@@ -52,6 +52,27 @@
             <div><span>连击</span><strong id="combo-value">0x</strong></div>
           </div>
           <div id="arena-wrap" class="arena-wrap">
+            <div class="range-scene" aria-hidden="true">
+              <div class="scene-sky"></div>
+              <div class="scene-backwall">
+                <span class="scene-wall-panel scene-wall-panel-left"></span>
+                <span class="scene-wall-panel scene-wall-panel-center"></span>
+                <span class="scene-wall-panel scene-wall-panel-right"></span>
+                <span class="scene-wall-light scene-wall-light-left"></span>
+                <span class="scene-wall-light scene-wall-light-right"></span>
+              </div>
+              <div class="scene-horizon"></div>
+              <div class="scene-floor">
+                <span class="scene-floor-line scene-floor-line-left"></span>
+                <span class="scene-floor-line scene-floor-line-center"></span>
+                <span class="scene-floor-line scene-floor-line-right"></span>
+                <span class="scene-floor-marker scene-floor-marker-one"></span>
+                <span class="scene-floor-marker scene-floor-marker-two"></span>
+              </div>
+              <div class="scene-side-rail scene-side-rail-left"></div>
+              <div class="scene-side-rail scene-side-rail-right"></div>
+              <div class="scene-platform"></div>
+            </div>
             <canvas id="arena" aria-label="定位训练场。点击红色 Click 靶，持续覆盖蓝色 Track 靶。"></canvas>
             <div id="aim-crosshair" class="aim-crosshair" hidden aria-hidden="true">
               <span class="crosshair-arm crosshair-arm-top"></span>
@@ -100,6 +121,6 @@
         </section>
       </section>
     </main>
-    <script type="module" src="app.js?v=20260824-17"></script>
+    <script type="module" src="app.js?v=20260824-18"></script>
   </body>
 </html>
