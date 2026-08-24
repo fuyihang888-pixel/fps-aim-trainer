@@ -2,6 +2,7 @@ export const DEFAULT_DPI = 1000;
 export const DEFAULT_SENSITIVITY = 1;
 export const VALORANT_YAW_DEGREES_PER_COUNT = 0.07;
 export const VALORANT_HORIZONTAL_FOV_DEGREES = 103;
+export const RESUME_COUNTDOWN_MS = 3000;
 
 export const resolveValorantSettings = (dpi, sensitivity) => ({
   dpi: Number.isFinite(dpi) && dpi > 0 ? dpi : DEFAULT_DPI,
@@ -51,6 +52,25 @@ export const calculateValorantRawInputScale = (
     : VALORANT_HORIZONTAL_FOV_DEGREES;
   const countsPer360 = calculateValorantCountsPer360(resolved.sensitivity);
   return (width * 360) / (countsPer360 * fov);
+};
+
+export const shiftTrainingTimelineAfterPause = (timeline, pausedAt, resumedAt) => {
+  const pauseDuration = Math.max(0, resumedAt - pausedAt);
+  return {
+    roundEndsAt: timeline.roundEndsAt + pauseDuration,
+    targetStartedAt: timeline.targetStartedAt + pauseDuration,
+    targetEndsAt: timeline.targetEndsAt + pauseDuration,
+    lastFrame: resumedAt
+  };
+};
+
+export const getResumeCountdownSeconds = (
+  startedAt,
+  now,
+  durationMs = RESUME_COUNTDOWN_MS
+) => {
+  const elapsed = Math.max(0, now - startedAt);
+  return Math.max(0, Math.ceil((durationMs - elapsed) / 1000));
 };
 
 export const createRoundStats = () => ({

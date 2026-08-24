@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#0c1118">
     <title>Vector Range | Aim Trainer</title>
-    <link rel="stylesheet" href="styles.css?v=20260823-12">
+    <link rel="stylesheet" href="styles.css?v=20260824-13">
   </head>
   <body>
     <main class="app-shell">
@@ -62,6 +62,21 @@
               <span class="crosshair-arm crosshair-arm-bottom"></span>
               <span class="crosshair-arm crosshair-arm-left"></span>
             </div>
+            <div id="pause-overlay" class="pause-overlay" role="dialog" aria-modal="true" aria-labelledby="pause-title" hidden>
+              <div id="pause-menu" class="pause-menu">
+                <p class="eyebrow">Paused</p>
+                <h2 id="pause-title">训练已暂停</h2>
+                <div class="pause-actions">
+                  <button id="exit-fullscreen-button" type="button">退出全屏</button>
+                  <button id="continue-training-button" class="primary-pause-action" type="button">继续训练</button>
+                  <button id="exit-and-end-button" class="danger-pause-action" type="button">退出全屏且结束训练</button>
+                </div>
+              </div>
+              <div id="resume-countdown" class="resume-countdown" aria-live="assertive" hidden>
+                <span>即将继续</span>
+                <strong id="resume-countdown-value">3</strong>
+              </div>
+            </div>
             <div id="ready-overlay" class="ready-overlay"><p id="overlay-title">准备就绪</p><small id="overlay-copy">点击“开始训练”进入混合局</small></div>
             <div id="result-overlay" class="result-overlay" hidden>
               <p class="eyebrow">Run complete</p>
@@ -88,6 +103,6 @@
         </section>
       </section>
     </main>
-    <script type="module" src="app.js?v=20260823-12"></script>
+    <script type="module" src="app.js?v=20260824-13"></script>
   </body>
 </html>

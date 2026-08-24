@@ -1,17 +1,20 @@
 import {
   DEFAULT_DPI,
   DEFAULT_SENSITIVITY,
+  RESUME_COUNTDOWN_MS,
   calculateEDpi,
   calculateValorantCm360,
   calculateValorantInputScale,
   calculateValorantRawInputScale,
+  getResumeCountdownSeconds,
   resolveValorantSettings,
+  shiftTrainingTimelineAfterPause,
   chooseTargetKind,
   createRoundStats,
   registerClick,
   registerTracking,
   summarizeRound
-} from './engine.js?v=20260823-12';
+} from './engine.js?v=20260824-13';
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('arena');
@@ -38,6 +41,13 @@ const MODES = {
 const saved = readStorage('vector-range') || {};
 const state = {
   running: false,
+  paused: false,
+  pauseStartedAt: 0,
+  pauseMode: null,
+  pauseActionPending: false,
+  resumeCountdownStartedAt: 0,
+  resumeCountdownTimer: 0,
+  fullscreenActive: document.fullscreenElement === arenaWrap,
   mode: normalizeMode(saved.mode),
   stats: createRoundStats(),
   target: null,
@@ -135,7 +145,11 @@ function normalizeSensitivityInputs() {
 }
 
 function updateInputMode() {
-  $('input-mode').textContent = state.rawInput
+  $('input-mode').textContent = state.paused
+    ? state.pauseMode === 'countdown'
+      ? '暂停 · 即将继续'
+      : '训练已暂停'
+    : state.rawInput
     ? '原始鼠标输入 · Valorant'
     : state.rawInputUnavailable
       ? '兼容鼠标输入 · 灵敏度已应用'
@@ -219,6 +233,18 @@ function clearRawInputFallbackTimer() {
   state.rawInputFallbackTimer = 0;
 }
 
+function clearResumeCountdownTimer() {
+  if (!state.resumeCountdownTimer) return;
+  window.clearTimeout(state.resumeCountdownTimer);
+  state.resumeCountdownTimer = 0;
+}
+
+function setPauseActionsDisabled(disabled) {
+  document.querySelectorAll('#pause-menu button').forEach((button) => {
+    button.disabled = disabled;
+  });
+}
+
 function setInputStatus(message) {
   const status = $('input-error');
   status.textContent = message;
@@ -238,7 +264,8 @@ function enableFallbackInput(message = '原始输入未启用，已自动切换�
   updateInputMode();
 }
 
-function requestTrainingPointerLock() {
+function requestTrainingPointerLock({ allowPaused = false } = {}) {
+  if (!state.running || (state.paused && !allowPaused)) return;
   if (!canvas.requestPointerLock) {
     enableFallbackInput('当前浏览器未提供原始输入，已自动切换兼容鼠标输入，可直接训练。');
     return;
@@ -337,15 +364,18 @@ function drawTarget(target, now) {
 }
 
 function updateHud() {
-  const remaining = Math.max(0, state.roundEndsAt - performance.now());
-  const seconds = Math.ceil(remaining / 1000);
-  $('time-value').textContent = `00:${String(seconds).padStart(2, '0')}`;
+  const now = state.paused ? state.pauseStartedAt : performance.now();
+  const remaining = Math.max(0, state.roundEndsAt - now);
+  const totalSeconds = Math.ceil(remaining / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  $('time-value').textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
   $('score-value').textContent = String(state.stats.score).padStart(4, '0');
   $('combo-value').textContent = `${state.stats.combo}x`;
 }
 
 function frame(now) {
-  if (!state.running) return;
+  if (!state.running || state.paused) return;
 
   const elapsed = now - state.lastFrame;
   state.lastFrame = now;
@@ -387,7 +417,14 @@ function startRound() {
   state.rawInput = false;
   state.rawInputRequested = false;
   clearRawInputFallbackTimer();
+  clearResumeCountdownTimer();
   state.running = true;
+  state.paused = false;
+  state.pauseStartedAt = 0;
+  state.pauseMode = null;
+  state.pauseActionPending = false;
+  state.resumeCountdownStartedAt = 0;
+  state.fullscreenActive = document.fullscreenElement === arenaWrap;
   state.stats = createRoundStats();
   state.history = [];
   state.target = null;
@@ -399,6 +436,7 @@ function startRound() {
   state.lastFrame = performance.now();
   $('ready-overlay').hidden = true;
   $('result-overlay').hidden = true;
+  $('pause-overlay').hidden = true;
   setInputStatus('');
   $('start-button').disabled = true;
   $('start-button').textContent = '训练中...';
@@ -409,17 +447,32 @@ function startRound() {
   requestAnimationFrame(frame);
 }
 
+function resetRoundInteraction() {
+  clearResumeCountdownTimer();
+  state.running = false;
+  state.paused = false;
+  state.pauseStartedAt = 0;
+  state.pauseMode = null;
+  state.pauseActionPending = false;
+  state.resumeCountdownStartedAt = 0;
+  state.rawInputRequested = false;
+  state.rawInput = false;
+  state.pointerClient = null;
+  clearRawInputFallbackTimer();
+  setTrainingCursorHidden(false);
+  setAimCrosshairVisible(false);
+  $('pause-overlay').hidden = true;
+  $('pause-menu').hidden = false;
+  $('resume-countdown').hidden = true;
+  setPauseActionsDisabled(false);
+  document.exitPointerLock?.();
+}
+
 function finishRound() {
   if (!state.running) return;
 
-  state.running = false;
-  setTrainingCursorHidden(false);
-  state.rawInputRequested = false;
-  state.rawInput = false;
-  clearRawInputFallbackTimer();
-  document.exitPointerLock?.();
-  setAimCrosshairVisible(false);
   const summary = summarizeRound(state.stats);
+  resetRoundInteraction();
   state.bestScores[state.mode] = Math.max(state.bestScores[state.mode], summary.totalScore);
   saveStorage({
     mode: state.mode,
@@ -437,6 +490,7 @@ function finishRound() {
   $('result-coverage').textContent = `${summary.trackCoverage}%`;
   $('result-track-time').textContent = `${(summary.trackCoveredMs / 1000).toFixed(1)} s`;
   $('result-combo').textContent = `${summary.bestCombo}x`;
+  $('time-value').textContent = '00:00';
   $('result-overlay').hidden = false;
   $('target-label').textContent = '训练完成';
   updateBestScore();
@@ -446,7 +500,170 @@ function finishRound() {
   setSensitivityControlsDisabled(false);
 }
 
+function cancelRound() {
+  if (!state.running) return;
+
+  resetRoundInteraction();
+  state.stats = createRoundStats();
+  state.target = null;
+  state.history = [];
+  context.clearRect(0, 0, state.width, state.height);
+  $('time-value').textContent = '01:00';
+  $('score-value').textContent = '0000';
+  $('combo-value').textContent = '0x';
+  $('result-overlay').hidden = true;
+  $('ready-overlay').hidden = false;
+  $('start-button').disabled = false;
+  $('start-button').innerHTML = '开始训练 <span>60S</span>';
+  setModeControlsDisabled(false);
+  setSensitivityControlsDisabled(false);
+  setInputStatus('');
+  renderModeSelection();
+  updateInputMode();
+}
+
+function pauseRound() {
+  if (!state.running || state.paused) return;
+
+  state.paused = true;
+  state.pauseStartedAt = performance.now();
+  state.pauseMode = 'menu';
+  state.pauseActionPending = false;
+  state.rawInputRequested = false;
+  state.rawInput = false;
+  state.pointerClient = null;
+  clearRawInputFallbackTimer();
+  clearResumeCountdownTimer();
+  document.exitPointerLock?.();
+  setTrainingCursorHidden(false);
+  setAimCrosshairVisible(false);
+  $('pause-overlay').hidden = false;
+  $('pause-menu').hidden = false;
+  $('resume-countdown').hidden = true;
+  setPauseActionsDisabled(false);
+  $('target-label').textContent = '训练已暂停';
+  updateHud();
+  updateInputMode();
+  $('continue-training-button').focus();
+}
+
+function resumeRound({ requestInput = true } = {}) {
+  if (!state.running || !state.paused) return;
+
+  const resumedAt = performance.now();
+  const timeline = shiftTrainingTimelineAfterPause({
+    roundEndsAt: state.roundEndsAt,
+    targetStartedAt: state.targetStartedAt,
+    targetEndsAt: state.targetEndsAt,
+    lastFrame: state.lastFrame
+  }, state.pauseStartedAt, resumedAt);
+  Object.assign(state, timeline);
+  clearResumeCountdownTimer();
+  state.paused = false;
+  state.pauseStartedAt = 0;
+  state.pauseMode = null;
+  state.pauseActionPending = false;
+  state.resumeCountdownStartedAt = 0;
+  $('pause-overlay').hidden = true;
+  $('pause-menu').hidden = false;
+  $('resume-countdown').hidden = true;
+  setPauseActionsDisabled(false);
+  setTrainingCursorHidden(true);
+  setAimCrosshairVisible(true);
+  $('target-label').textContent = state.target?.kind === 'click'
+    ? 'CLICK · 点击靶心'
+    : 'TRACK · 保持覆盖';
+  updateHud();
+  updateInputMode();
+  if (requestInput && document.pointerLockElement !== canvas) requestTrainingPointerLock();
+  requestAnimationFrame(frame);
+}
+
+function renderResumeCountdown() {
+  if (!state.running || !state.paused || state.pauseMode !== 'countdown') return;
+
+  const now = performance.now();
+  const seconds = getResumeCountdownSeconds(state.resumeCountdownStartedAt, now);
+  if (seconds === 0) {
+    resumeRound({ requestInput: false });
+    return;
+  }
+
+  $('resume-countdown-value').textContent = seconds;
+  const elapsed = Math.max(0, now - state.resumeCountdownStartedAt);
+  const nextBoundary = Math.min(
+    RESUME_COUNTDOWN_MS,
+    (Math.floor(elapsed / 1000) + 1) * 1000
+  );
+  state.resumeCountdownTimer = window.setTimeout(
+    renderResumeCountdown,
+    Math.max(16, nextBoundary - elapsed)
+  );
+}
+
+function startWindowedResumeCountdown() {
+  if (!state.running || !state.paused) return;
+
+  clearResumeCountdownTimer();
+  state.pauseMode = 'countdown';
+  state.resumeCountdownStartedAt = performance.now();
+  $('pause-menu').hidden = true;
+  $('resume-countdown').hidden = false;
+  $('resume-countdown-value').textContent = '3';
+  $('target-label').textContent = '3 秒后继续';
+  updateInputMode();
+  renderResumeCountdown();
+  requestTrainingPointerLock({ allowPaused: true });
+}
+
+function beginPauseAction() {
+  if (!state.running || !state.paused || state.pauseActionPending || state.pauseMode !== 'menu') return false;
+  state.pauseActionPending = true;
+  setPauseActionsDisabled(true);
+  return true;
+}
+
+async function continueTraining() {
+  if (!beginPauseAction()) return;
+
+  if (document.fullscreenElement !== arenaWrap) {
+    try {
+      await arenaWrap.requestFullscreen?.();
+    } catch {
+      // Continuing in windowed mode is still preferable to discarding the run.
+    }
+  }
+  resumeRound();
+}
+
+async function exitFullscreenAndResume() {
+  if (!beginPauseAction()) return;
+
+  if (document.fullscreenElement) {
+    try {
+      await document.exitFullscreen?.();
+    } catch {
+      // The browser may already have completed its native Escape transition.
+    }
+  }
+  startWindowedResumeCountdown();
+}
+
+async function exitFullscreenAndCancel() {
+  if (!beginPauseAction()) return;
+
+  if (document.fullscreenElement) {
+    try {
+      await document.exitFullscreen?.();
+    } catch {
+      // Cancel the round even if the browser already left fullscreen.
+    }
+  }
+  cancelRound();
+}
+
 function toggleFullscreen() {
+  if (state.paused) return;
   if (!document.fullscreenElement) {
     arenaWrap.requestFullscreen?.().then(() => {
       if (state.running) requestTrainingPointerLock();
@@ -457,6 +674,7 @@ function toggleFullscreen() {
 }
 
 function pointerPosition(event) {
+  if (!state.running || state.paused) return;
   if (document.pointerLockElement === canvas) {
     if (!state.rawInput) return;
     state.pointer.x = Math.max(0, Math.min(state.width, state.pointer.x + event.movementX * state.rawInputScale));
@@ -491,7 +709,7 @@ document.querySelectorAll('.mode-button').forEach((button) => {
 });
 canvas.addEventListener('pointermove', pointerPosition);
 canvas.addEventListener('pointerdown', (event) => {
-  if (!state.running || state.target?.kind !== 'click') return;
+  if (!state.running || state.paused || state.target?.kind !== 'click') return;
 
   pointerPosition(event);
   const hit = pointInTarget(state.pointer.x, state.pointer.y, state.target);
@@ -500,10 +718,21 @@ canvas.addEventListener('pointerdown', (event) => {
 });
 $('start-button').addEventListener('click', startRound);
 $('restart-button').addEventListener('click', startRound);
+$('exit-fullscreen-button').addEventListener('click', exitFullscreenAndResume);
+$('continue-training-button').addEventListener('click', continueTraining);
+$('exit-and-end-button').addEventListener('click', exitFullscreenAndCancel);
 $('fullscreen-button').addEventListener('click', toggleFullscreen);
 window.addEventListener('resize', resize);
-document.addEventListener('fullscreenchange', resize);
+document.addEventListener('fullscreenchange', () => {
+  const wasFullscreen = state.fullscreenActive;
+  state.fullscreenActive = document.fullscreenElement === arenaWrap;
+  resize();
+  if (wasFullscreen && !state.fullscreenActive && state.running && !state.paused) {
+    pauseRound();
+  }
+});
 document.addEventListener('pointerlockchange', () => {
+  const wasRawInput = state.rawInput;
   const lockedToCanvas = document.pointerLockElement === canvas;
   // A lock promise/event can arrive after the fallback path has already
   // invalidated the request. Do not leave the document locked in that state:
@@ -520,7 +749,18 @@ document.addEventListener('pointerlockchange', () => {
     clearRawInputFallbackTimer();
     state.rawInputUnavailable = false;
     setInputStatus('');
-  } else if (state.running && state.rawInputRequested) {
+  } else if (wasRawInput && state.running) {
+    state.rawInputRequested = false;
+    clearRawInputFallbackTimer();
+    state.pointerClient = null;
+    if (state.paused) {
+      if (!state.fullscreenActive) cancelRound();
+    } else if (state.fullscreenActive) {
+      pauseRound();
+    } else {
+      cancelRound();
+    }
+  } else if (state.running && !state.paused && state.rawInputRequested) {
     enableFallbackInput('指针锁定未启用，已自动切换兼容鼠标输入，可直接训练。');
   }
   updateInputMode();
@@ -529,6 +769,17 @@ document.addEventListener('pointerlockerror', () => {
   if (state.running && state.rawInputRequested) enableFallbackInput();
 });
 window.addEventListener('keydown', (event) => {
+  if (event.repeat) return;
+  if (event.key === 'Escape' && state.running) {
+    if (state.paused) {
+      if (!state.fullscreenActive) cancelRound();
+    } else if (state.fullscreenActive) {
+      pauseRound();
+    } else {
+      cancelRound();
+    }
+    return;
+  }
   if (event.key.toLowerCase() === 'f') {
     event.preventDefault();
     toggleFullscreen();
