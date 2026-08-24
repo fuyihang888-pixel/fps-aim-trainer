@@ -75,10 +75,9 @@ export const applyValorantMouseCounts = (
   return {
     yawDeg: normalizeYawDegrees(yaw + horizontalCounts * degreesPerCount),
     pitchDeg: clamp(
-      // Browser mouse Y grows downward. Valorant follows the usual FPS
-      // convention: moving the mouse down looks down, which is negative
-      // world pitch in the projection below.
-      pitch - verticalCounts * degreesPerCount,
+      // Inverted Y axis: positive browser movement (mouse down) increases
+      // pitch, while negative movement (mouse up) decreases it.
+      pitch + verticalCounts * degreesPerCount,
       -VALORANT_MAX_PITCH_DEGREES,
       VALORANT_MAX_PITCH_DEGREES
     )
