@@ -4,11 +4,11 @@ import {
   RESUME_COUNTDOWN_MS,
   calculateEDpi,
   calculateValorantCm360,
+  calculateValorantFallbackInputScale,
   calculateValorantInputScale,
   calculateValorantRawInputScale,
   clampTargetToArena,
   getResumeCountdownSeconds,
-  resolveValorantSettings,
   resolveEscapeAction,
   resolvePointerUnlockAction,
   shiftTrainingTimelineAfterPause,
@@ -17,7 +17,7 @@ import {
   registerClick,
   registerTracking,
   summarizeRound
-} from './engine.js?v=20260824-14';
+} from './engine.js?v=20260824-15';
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('arena');
@@ -25,6 +25,7 @@ const context = canvas.getContext('2d');
 const arenaWrap = $('arena-wrap');
 const aimCrosshair = $('aim-crosshair');
 const ROUND_DURATION_MS = 60_000;
+const SENSITIVITY_SETTINGS_VERSION = 1;
 
 const MODES = {
   static: {
@@ -42,6 +43,7 @@ const MODES = {
 };
 
 const saved = readStorage('vector-range') || {};
+const initialSettings = resolveInitialSensitivitySettings(saved);
 const state = {
   running: false,
   paused: false,
@@ -63,7 +65,6 @@ const state = {
   lastFrame: 0,
   roundEndsAt: 0,
   // Fallback pointer deltas are CSS pixels; locked deltas are raw counts.
-  inputScale: 1,
   fallbackInputScale: 1,
   rawInputScale: 1,
   lockedDpi: DEFAULT_DPI,
@@ -78,11 +79,8 @@ const state = {
   bestScores: createBestScores(saved)
 };
 
-// Sensitivity is deliberately reset on each page load. A visitor can tune it
-// for the current session, while every fresh visit starts from the shared
-// Valorant reference preset.
-$('dpi-input').value = DEFAULT_DPI;
-$('sensitivity-input').value = DEFAULT_SENSITIVITY;
+$('dpi-input').value = initialSettings.dpi;
+$('sensitivity-input').value = initialSettings.sensitivity;
 
 function readStorage(key) {
   try {
@@ -114,6 +112,9 @@ function saveStorage(result) {
     const previous = readStorage('vector-range') || {};
     const recent = Array.isArray(previous.recent) ? previous.recent : [];
     localStorage.setItem('vector-range', JSON.stringify({
+      sensitivitySettingsVersion: SENSITIVITY_SETTINGS_VERSION,
+      dpi: state.lockedDpi,
+      sensitivity: state.lockedSensitivity,
       mode: state.mode,
       best: state.bestScores.mixed,
       bestScores: state.bestScores,
@@ -124,28 +125,93 @@ function saveStorage(result) {
   }
 }
 
+function saveSensitivitySettings(settings) {
+  try {
+    const previous = readStorage('vector-range') || {};
+    localStorage.setItem('vector-range', JSON.stringify({
+      ...previous,
+      sensitivitySettingsVersion: SENSITIVITY_SETTINGS_VERSION,
+      dpi: settings.dpi,
+      sensitivity: settings.sensitivity
+    }));
+  } catch {
+    // Per-user settings remain usable for the current session if storage is blocked.
+  }
+}
+
 function formatDecimal(value, digits) {
   return Number(value.toFixed(digits)).toString();
 }
 
+function resolveInitialSensitivitySettings(settings) {
+  if (settings.sensitivitySettingsVersion !== SENSITIVITY_SETTINGS_VERSION) {
+    return { dpi: DEFAULT_DPI, sensitivity: DEFAULT_SENSITIVITY };
+  }
+  const dpiInput = $('dpi-input');
+  const sensitivityInput = $('sensitivity-input');
+  dpiInput.value = Number(settings.dpi);
+  sensitivityInput.value = Number(settings.sensitivity);
+  return readSensitivityInputs() || {
+    dpi: DEFAULT_DPI,
+    sensitivity: DEFAULT_SENSITIVITY
+  };
+}
+
+function readSensitivityInputs() {
+  const dpiInput = $('dpi-input');
+  const sensitivityInput = $('sensitivity-input');
+  const dpi = Number(dpiInput.value);
+  const sensitivity = Number(sensitivityInput.value);
+  if (
+    !dpiInput.value.trim()
+    || !sensitivityInput.value.trim()
+    || !dpiInput.checkValidity()
+    || !sensitivityInput.checkValidity()
+    || !Number.isFinite(dpi)
+    || !Number.isFinite(sensitivity)
+    || dpi <= 0
+    || sensitivity <= 0
+  ) return null;
+  return { dpi, sensitivity };
+}
+
+function renderSensitivityProfile(settings) {
+  $('sensitivity-profile').textContent = settings
+    ? `${formatDecimal(settings.dpi, 3)} DPI × ${formatDecimal(settings.sensitivity, 6)}`
+    : '等待有效参数';
+}
+
 function updateSensitivity() {
-  const settings = resolveValorantSettings(
-    Number($('dpi-input').value),
-    Number($('sensitivity-input').value)
-  );
+  const settings = readSensitivityInputs();
+  if (!settings) {
+    $('edpi-value').textContent = '—';
+    $('effective-sensitivity').textContent = '—';
+    $('cm360-value').textContent = '—';
+    if (!state.running) renderSensitivityProfile(null);
+    return null;
+  }
   $('edpi-value').textContent = formatDecimal(calculateEDpi(settings.dpi, settings.sensitivity), 3);
   $('effective-sensitivity').textContent = `${calculateValorantInputScale(settings.dpi, settings.sensitivity).toFixed(6)}x`;
   $('cm360-value').textContent = `${calculateValorantCm360(settings.dpi, settings.sensitivity).toFixed(2)} cm`;
+  if (!state.running) renderSensitivityProfile(settings);
+  return settings;
 }
 
 function normalizeSensitivityInputs() {
-  const settings = resolveValorantSettings(
-    Number($('dpi-input').value),
-    Number($('sensitivity-input').value)
-  );
+  const settings = readSensitivityInputs();
+  if (!settings) {
+    setInputStatus('请输入有效的鼠标硬件 DPI 和游戏内灵敏度。');
+    const invalidInput = [$('dpi-input'), $('sensitivity-input')]
+      .find((input) => !input.value.trim() || !input.checkValidity());
+    invalidInput?.focus();
+    invalidInput?.reportValidity();
+    return null;
+  }
   $('dpi-input').value = settings.dpi;
   $('sensitivity-input').value = settings.sensitivity;
   updateSensitivity();
+  saveSensitivitySettings(settings);
+  setInputStatus('');
   return settings;
 }
 
@@ -157,7 +223,7 @@ function updateInputMode() {
     : state.rawInput
     ? '原始鼠标输入 · Valorant'
     : state.rawInputUnavailable
-      ? '兼容鼠标输入 · 灵敏度已应用'
+      ? '兼容鼠标输入 · 近似模式'
       : state.running
         ? '正在选择输入...'
         : '点击开始后自动选择';
@@ -470,10 +536,11 @@ function startRound() {
 
   resize();
   const settings = normalizeSensitivityInputs();
+  if (!settings) return;
   state.lockedDpi = settings.dpi;
   state.lockedSensitivity = settings.sensitivity;
-  state.inputScale = calculateValorantInputScale(state.lockedDpi, state.lockedSensitivity);
-  state.fallbackInputScale = state.inputScale;
+  renderSensitivityProfile(settings);
+  state.fallbackInputScale = calculateValorantFallbackInputScale(state.lockedSensitivity);
   state.rawInputScale = calculateValorantRawInputScale(state.lockedSensitivity, state.width);
   state.rawInputUnavailable = false;
   state.rawInput = false;
@@ -792,7 +859,13 @@ function pointerPosition(event) {
 }
 
 ['dpi-input', 'sensitivity-input'].forEach((id) => {
-  $(id).addEventListener('input', updateSensitivity);
+  $(id).addEventListener('input', () => {
+    const settings = updateSensitivity();
+    if (settings) {
+      saveSensitivitySettings(settings);
+      setInputStatus('');
+    }
+  });
   $(id).addEventListener('blur', normalizeSensitivityInputs);
 });
 document.querySelectorAll('.mode-button').forEach((button) => {

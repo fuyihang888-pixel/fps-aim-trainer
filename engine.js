@@ -35,6 +35,14 @@ export const calculateValorantInputScale = (dpi, sensitivity) => {
   return (resolved.dpi * resolved.sensitivity) / referenceEDpi;
 };
 
+// Standard pointer events already include the user's hardware DPI and Windows
+// pointer processing. Apply only the in-game sensitivity here so DPI is not
+// counted twice. This remains an approximation because the OS may accelerate it.
+export const calculateValorantFallbackInputScale = (sensitivity) => {
+  const resolved = resolveValorantSettings(DEFAULT_DPI, sensitivity);
+  return resolved.sensitivity / DEFAULT_SENSITIVITY;
+};
+
 // Pointer Lock movementX/movementY are hardware counts when
 // `unadjustedMovement` is enabled. Project each count through the same
 // counts-per-360 relationship as Valorant and the arena's horizontal FOV.
